@@ -91,6 +91,19 @@ preguntan; consúltalos con la tool. No ofrezcas descuentos que no existan.
 del hijo, y el nivel. Pide lo que falte de forma natural (no como formulario). Ofrece días con \
 `dias_disponibles_visita` y confirma día y hora antes de llamar a `agendar_visita`.
 
+## Fechas, horas y datos faltantes (errores que NO debes cometer)
+- **Copia las fechas TAL CUAL salen de la herramienta** — el día, el número y el mes exactos. \
+NUNCA recalcules ni "ajustes" una fecha (no cambies "viernes 26" por "viernes 27"). Si dudas, \
+vuelve a llamar `dias_disponibles_visita`.
+- Una vez que `agendar_visita` confirma una cita, **YA ESTÁ AGENDADA**: NO vuelvas a ofrecer \
+horarios ni digas que "se ocupó". Solo confírmala con calidez. Si el papá quiere otra fecha, \
+recién entonces llamas la tool de nuevo.
+- **La hora/fecha actual** úsala SOLO del contexto temporal que te di; si no la tienes, no la \
+inventes. Mejor no des una hora de reloj exacta a menos que sea necesario.
+- Si un dato **no está en KB/tools**, defiere UNA vez con honestidad y luego **avanza** \
+(ofrece capturar su WhatsApp o pasar a la visita). NO repitas "no lo tengo / lo ves en la \
+visita" turno tras turno — eso se siente evasivo y en loop.
+
 ## Herramientas
 Tienes herramientas para costos, horarios, estancias (horario extendido), campus, becas, días \
 disponibles para visita y para agendar. Úsalas en cuanto el papá toque uno de esos temas. \
@@ -356,7 +369,17 @@ async def _tool_dias_disponibles_visita(_inp: dict[str, Any]) -> str:
     dias = await proximos_dias_habiles(cantidad=3)
     if not dias:
         return "No tengo días disponibles a la mano ahora. Ofrece tomar sus datos para que Lily lo contacte."
-    return "Próximos días disponibles para la cita: " + "; ".join(_fecha_es(d) for d in dias) + "."
+    hoy = datetime.now(TZ_MONTERREY).date()
+    lineas = []
+    for d in dias:
+        etq = " (hoy)" if d.date() == hoy else ""
+        # Incluye el ISO para que pases dia_iso EXACTO a agendar_visita.
+        lineas.append(f"- {_fecha_es(d)}{etq}  [dia_iso={d.date().isoformat()}]")
+    return (
+        "Días disponibles para la cita (ofrécelos EXACTAMENTE así, sin cambiar el número de día):\n"
+        + "\n".join(lineas)
+        + "\nCuando el papá elija, pasa ese dia_iso TAL CUAL a agendar_visita."
+    )
 
 
 def _parse_slot(dia_iso: str, hora: str) -> datetime | None:
@@ -372,7 +395,38 @@ def _parse_slot(dia_iso: str, hora: str) -> datetime | None:
         return None
 
 
+def _fmt_dt_almacenado(valor: object) -> str | None:
+    """Formatea una fecha guardada (datetime o ISO str) a '<fecha> a las <hora>'."""
+    if valor is None:
+        return None
+    dt = valor
+    if isinstance(valor, str):
+        try:
+            dt = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(TZ_MONTERREY)
+    return f"{_fecha_es(dt)} a las {_hora_es(dt)}"
+
+
 async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: Canal) -> str:
+    repo = get_repository()
+
+    # 0. IDEMPOTENCIA: si esta sesión YA tiene cita, no re-crear ni re-checar
+    # disponibilidad (evita el bug de "se ocupó" chocando con la cita propia).
+    estado_prev = await repo.get_conversation(session_id)
+    if estado_prev is not None and estado_prev.agendado:
+        cuando = _fmt_dt_almacenado(estado_prev.fecha_agendado)
+        if cuando:
+            return (
+                f"La cita de esta familia YA está agendada para el {cuando}. NO ofrezcas otro "
+                f"horario ni digas que se ocupó: solo confírmasela con calidez. Si el papá pide "
+                f"explícitamente CAMBIARLA, dímelo y la reprogramamos."
+            )
+
     dia_iso = inp.get("dia_iso", "")
     hora = inp.get("hora", "")
     dt = _parse_slot(dia_iso, hora)
@@ -437,7 +491,6 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
 
     # 5. Marcar la conversación como agendada (best-effort).
     try:
-        repo = get_repository()
         estado = await repo.get_conversation(session_id)
         if estado is not None:
             estado.agendado = True
