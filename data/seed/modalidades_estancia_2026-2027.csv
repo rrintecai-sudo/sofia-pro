@@ -1,0 +1,6 @@
+nombre,aplica_para,hora_inicio,hora_fin,incluye_comida,incluye_snack,incluye_academia,costo_mensual,costo_por_dia,inscripcion_extra,notas
+manana,"maternal,kinder,primaria_baja,primaria_alta,secundaria",07:00,,false,false,false,550,,,De 7:00 a.m. hasta la hora de entrada del alumno. Sin alimentos.
+media,"maternal,kinder,primaria_baja,primaria_alta,secundaria",07:00,16:00,true,false,true,1400,,,"Incluye comida y 1 academia. Hasta las 4:00 p.m."
+completa,"maternal,kinder,primaria_baja,primaria_alta,secundaria",07:00,19:00,true,true,true,2500,,,"Incluye comida, snack y 2 academias."
+express,"maternal,kinder,primaria_baja,primaria_alta,secundaria",07:00,19:00,true,false,false,,210,,Por día. Se solicita en recepción.
+academia_individual,"maternal,kinder,primaria_baja,primaria_alta,secundaria",,,true,false,false,800,,,"2 clases por semana. Incluye comida los días de asistencia."

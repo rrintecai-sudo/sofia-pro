@@ -1,0 +1,74 @@
+{
+  "name": "invented_data",
+  "description": "Turnos donde Sofía v2 afirma información que NO está en la conversación: nombres de papá no proporcionados, género/edad/nivel del hijo no mencionados, afirmar haber visto enlaces o imágenes que no puede leer, asumir información de estado_capturado que no está, etc.",
+  "selection_criteria": "Razonamiento del juez (>=1 de 3 runs) describe Sofía afirmando entidades sin respaldo. Categoría peor o crítica. Verificado manualmente.",
+  "source_runs": [
+    "full-20260518-222305.json",
+    "full-20260518-225554.json",
+    "full-20260518-232113.json"
+  ],
+  "total_items": 5,
+  "curation_notes": "Curación manual sobre razonamientos del juez de los 3 golden runs de Bloque 5.5. Cada turno está en EXACTAMENTE UN set (sets disjuntos) según el bug dominante. Validado por Oscar el 2026-05-19.",
+  "items": [
+    {
+      "session_id": "34662236125@s.whatsapp.net",
+      "turn_index": 38,
+      "user_msg": "Primer grado",
+      "expected_pattern": "Sofía NO debe afirmar ninguna entidad (nombre del hijo, edad, nivel, escuela, género del hijo, eventos previos, contenido de imágenes/enlaces) que no aparezca literalmente en mensajes previos del papá ni en estado_capturado. Si necesita un dato y no lo tiene, debe preguntarlo. Sub-tipo 'ignora estado_capturado': cuando el papá dio un dato y Sofía lo ignora para preguntarlo otra vez o asumir otro.",
+      "baseline_failed": true,
+      "baseline_bad_runs": 3,
+      "judge_reasoning_excerpts": [
+        "La NUEVA ignora el contexto implícito (papá interesado en colegio, probablemente primaria) y en lugar de avanzar el journey hace una pregunta innecesaria que retrasa la conversación, mientras que la ORIGINAL ya entregaba información concreta de valor.",
+        "La NUEVA ignora completamente el contexto y responde con una pregunta genérica, perdiendo toda la información de valor que la ORIGINAL entregaba sobre colegiatura y cuotas."
+      ]
+    },
+    {
+      "session_id": "34662236125@s.whatsapp.net",
+      "turn_index": 39,
+      "user_msg": "Gracias por comunicarte con Gaby En digital. Por favor, hazme saber cómo puedo ayudarte.",
+      "expected_pattern": "Sofía NO debe afirmar ninguna entidad (nombre del hijo, edad, nivel, escuela, género del hijo, eventos previos, contenido de imágenes/enlaces) que no aparezca literalmente en mensajes previos del papá ni en estado_capturado. Si necesita un dato y no lo tiene, debe preguntarlo. Sub-tipo 'ignora estado_capturado': cuando el papá dio un dato y Sofía lo ignora para preguntarlo otra vez o asumir otro.",
+      "baseline_failed": true,
+      "baseline_bad_runs": 3,
+      "judge_reasoning_excerpts": [
+        "La NUEVA responde como si el mensaje fuera de un papá llamado Gaby, cuando en realidad es un mensaje automático de un sistema externo ('Gaby En digital'); además pierde el aprendizaje interno que ORIGINAL registra correctamente sobre mantener la identidad de Sofía.",
+        "La NUEVA asume incorrectamente que el papá tiene un hijo en primero de secundaria, inventando contexto que no existe en el mensaje, mientras que la ORIGINAL simplemente registra el aprendizaje de identidad sin hacer suposiciones."
+      ]
+    },
+    {
+      "session_id": "34662236125@s.whatsapp.net",
+      "turn_index": 49,
+      "user_msg": "Que más",
+      "expected_pattern": "Sofía NO debe afirmar ninguna entidad (nombre del hijo, edad, nivel, escuela, género del hijo, eventos previos, contenido de imágenes/enlaces) que no aparezca literalmente en mensajes previos del papá ni en estado_capturado. Si necesita un dato y no lo tiene, debe preguntarlo. Sub-tipo 'ignora estado_capturado': cuando el papá dio un dato y Sofía lo ignora para preguntarlo otra vez o asumir otro.",
+      "baseline_failed": true,
+      "baseline_bad_runs": 3,
+      "judge_reasoning_excerpts": [
+        "NUEVA usa el nombre 'Gaby' sin que el papá lo haya proporcionado en el mensaje, lo cual es un error que puede resultar extraño o invasivo, además de ser más fría y menos cálida que ORIGINAL.",
+        "La NUEVA repite una pregunta sobre la edad del hijo que ya fue respondida implícitamente en el contexto, y su tono es más frío y estructurado (con bullets y negritas) comparado con la calidez natural de la ORIGINAL que explica el enfoque pedagógico de forma más cálida y conectada."
+      ]
+    },
+    {
+      "session_id": "34662236125@s.whatsapp.net",
+      "turn_index": 62,
+      "user_msg": "Que al d\",\"Más",
+      "expected_pattern": "Sofía NO debe afirmar ninguna entidad (nombre del hijo, edad, nivel, escuela, género del hijo, eventos previos, contenido de imágenes/enlaces) que no aparezca literalmente en mensajes previos del papá ni en estado_capturado. Si necesita un dato y no lo tiene, debe preguntarlo. Sub-tipo 'ignora estado_capturado': cuando el papá dio un dato y Sofía lo ignora para preguntarlo otra vez o asumir otro.",
+      "baseline_failed": true,
+      "baseline_bad_runs": 2,
+      "judge_reasoning_excerpts": [
+        "La NUEVA llama al papá 'Gaby' (nombre incorrecto o inventado) y el mensaje original del papá es fragmentado e incomprensible, por lo que la respuesta elaborada sobre pensamiento crítico en tercero parece desconectada del contexto real, además de sonar más genérica y menos cálida que la ORIGINAL.",
+        "La NUEVA respuesta es fría y no aporta valor, mientras que la ORIGINAL aprovecha el contexto previo para dar información útil sobre 3° de primaria con calidez y profundidad."
+      ]
+    },
+    {
+      "session_id": "5218441302112@s.whatsapp.net",
+      "turn_index": 18,
+      "user_msg": "https://www.instagram.com/p/DYSuU4IATTZ/?igsh=MTV0amNncHYzMzVsdQ==",
+      "expected_pattern": "Sofía NO debe afirmar ninguna entidad (nombre del hijo, edad, nivel, escuela, género del hijo, eventos previos, contenido de imágenes/enlaces) que no aparezca literalmente en mensajes previos del papá ni en estado_capturado. Si necesita un dato y no lo tiene, debe preguntarlo. Sub-tipo 'ignora estado_capturado': cuando el papá dio un dato y Sofía lo ignora para preguntarlo otra vez o asumir otro.",
+      "baseline_failed": true,
+      "baseline_bad_runs": 3,
+      "judge_reasoning_excerpts": [
+        "La NUEVA ignora completamente el enlace compartido, asume contexto sin confirmarlo y fuerza un agendado sin haber generado valor ni entendido qué motivó al papá a compartir ese contenido.",
+        "La NUEVA afirma haber visto el contenido del link ('Vi el link de Instagram') cuando en realidad no puede acceder a él, lo cual es una afirmación falsa, y además presiona prematuramente hacia agendar una cita sin haber establecido contexto ni valor previo."
+      ]
+    }
+  ]
+}
