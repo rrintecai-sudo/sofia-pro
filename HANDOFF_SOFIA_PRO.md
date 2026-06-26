@@ -17,7 +17,11 @@ Sofía actual (`sofia-maple-v3`) está hecha **code-driven**: el código mete bl
 ## Qué ya está hecho
 1. ✅ `sofia-pro/` clonado de `sofia-maple-v3` (capa de datos, KB, web UI, Dockerfile, BD — todo reutilizable, NO reescribir).
 2. ✅ Mapeada la interfaz y las funciones reutilizables (abajo).
-3. ⏳ FALTA: escribir `app/core/agente.py` (el loop de agente), reconectar el webhook, deploy a servicio nuevo, probar con simulador.
+3. ✅ `app/core/agente.py` — loop de agente model-driven (Sonnet conduce + 7 tools dueñas de los datos). `procesar_turno_agente(...)`.
+4. ✅ Webhook reconectado: `POST /webhook/web` llama al agente nuevo (`fase_journey="agente"`, `intent=None`).
+5. ✅ **DESPLEGADO en paralelo** (2026-06-26): servicio EasyPanel `maple-v3/sofia-pro`, source GitHub `rrintecai-sudo/sofia-pro` (público), build Dockerfile, `ANTHROPIC_MODEL_PRINCIPAL=claude-sonnet-4-6`, MISMA Supabase que la vieja. URL: **https://sofia-pro.cxjnjn.easypanel.host/chat**. Verificado: readyz OK, turno real mapea edad→grado→precio vía tool, prompt-cache activo (~23k tok).
+   - Redeploy tras `git push`: `cd ../../sofia-maple && set -a && . ./.env.local && set +a && cd <repo> && uv run python scripts/deploy_easypanel.py --redeploy` (autoDeploy=False).
+6. ⏳ FALTA: correr el simulador A/B contra la URL de Pro y comparar vs baseline 3/15.
 
 ## Interfaz a respetar (el webhook)
 `app/api/webhook_web.py`: `POST /webhook/web` recibe `{content}` + cookie de sesión → hoy llama `procesar_turno(...)`. **Cámbialo para llamar al agente nuevo** y devolver el mismo shape: `{session_id, response, turn_number, tokens_input, tokens_output, tokens_cached, cost_usd, latency_ms}` (puedes simplificar: dropear `fase_journey`/`intent` o mandarlos como string fijo). `GET /chat` sirve `web/templates/chat.html` (NO tocar).
