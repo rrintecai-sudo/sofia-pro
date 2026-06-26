@@ -31,7 +31,8 @@ from app.core.appointment_extractor import TZ_MONTERREY
 from app.core.repository import get_repository
 from app.core.state import Canal, EstadoConversacion
 from app.integrations.appointments import create_appointment
-from app.integrations.leads import create_lead, get_lead_by_session
+from app.integrations.events import emit_event
+from app.integrations.leads import advance_stage_if_lower, create_lead, get_lead_by_session
 from app.observability.costs import calculate_cost
 from app.tools.availability_checker import is_slot_available, proximos_dias_habiles
 from app.tools.becas import get_becas
@@ -494,6 +495,41 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
             "No pude crear la cita en el sistema. Ofrece tomar sus datos para que Lily lo "
             "contacte y confirme la visita."
         )
+
+    # 4b. Avanzar el stage del lead a 'cita_agendada' + emitir eventos. Es lo que
+    # hace que la cita aparezca en el pipeline/panel de admisiones (Maple Platform
+    # filtra por stage). BEST-EFFORT: la cita YA está creada; ningún error aquí la
+    # debe tumbar.
+    fecha_humana = f"{_fecha_es(dt)} a las {_hora_es(dt)}"
+    try:
+        await emit_event(
+            "sofia_appointment_scheduled",
+            lead_id=lead_id,
+            session_id=session_id,
+            description=(
+                f"Sofía Pro agendó cita para {fecha_humana} en "
+                f"{campus.nombre if campus else f'campus_id={campus_id}'} (pendiente de aprobación)"
+            ),
+            metadata={
+                "appointment_id": appt_id,
+                "fecha_hora": dt.isoformat(),
+                "canal": canal.value,
+                "status": "pendiente",
+                "campus_id": campus_id,
+            },
+        )
+        lead_now = await get_lead_by_session(session_id)
+        if lead_now and lead_now.stage != "cita_agendada":
+            if await advance_stage_if_lower(lead_id, lead_now.stage, "cita_agendada"):
+                await emit_event(
+                    "lead_stage_changed",
+                    lead_id=lead_id,
+                    session_id=session_id,
+                    description=f"Stage avanzó de {lead_now.stage} a cita_agendada",
+                    metadata={"from": lead_now.stage, "to": "cita_agendada"},
+                )
+    except Exception as exc:  # pragma: no cover - no debe tumbar el agendado
+        log.warning("post-agendado (stage/evento) falló", extra={"error": str(exc), "lead_id": lead_id})
 
     # 5. Marcar la conversación como agendada (best-effort).
     try:
