@@ -31,7 +31,11 @@ from app.config import get_settings
 from app.core.appointment_extractor import TZ_MONTERREY
 from app.core.repository import get_repository
 from app.core.state import Canal, EstadoConversacion
-from app.integrations.appointments import create_appointment
+from app.integrations.appointments import (
+    create_appointment,
+    get_pending_appointment_by_lead,
+    update_appointment,
+)
 from app.integrations.events import emit_event
 from app.integrations.leads import advance_stage_if_lower, create_lead, get_lead_by_session
 from app.notifications.email import (
@@ -454,28 +458,121 @@ def _fmt_dt_almacenado(valor: object) -> str | None:
     return f"{_fecha_es(dt)} a las {_hora_es(dt)}"
 
 
-async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: Canal) -> str:
-    repo = get_repository()
+async def _resolver_campus(nivel: str, edad: int | None):
+    """Campus + campus_id para el nivel. Mapea 'primaria' por edad a baja/alta,
+    porque la tabla campus se indexa por sub-nivel (primaria_baja/alta)."""
+    nivel_campus = nivel
+    if nivel == "primaria":
+        nivel_campus = "primaria_alta" if (edad is not None and edad >= 9) else "primaria_baja"
+    campus = await get_campus_para_nivel(nivel_campus) if nivel_campus else None
+    return campus, (campus.id if campus else None)
 
-    # 0. IDEMPOTENCIA: si esta sesión YA tiene cita, no re-crear ni re-checar
-    # disponibilidad (evita el bug de "se ocupó" chocando con la cita propia).
-    estado_prev = await repo.get_conversation(session_id)
-    if estado_prev is not None and estado_prev.agendado:
-        cuando = _fmt_dt_almacenado(estado_prev.fecha_agendado)
-        if cuando:
-            return (
-                f"La cita de esta familia YA está agendada para el {cuando}. NO ofrezcas otro "
-                f"horario ni digas que se ocupó: solo confírmasela con calidez. Si el papá pide "
-                f"explícitamente CAMBIARLA, dímelo y la reprogramamos."
+
+async def _enviar_correos_cita(
+    *, inp: dict[str, Any], dt: datetime, campus, appt_id: int, canal: Canal, nivel_lead: str | None
+) -> bool:
+    """Aviso interno a Lily + confirmación al papá (Resend). Devuelve si el correo
+    al papá se entregó. Nunca lanza (el correo no es load-bearing)."""
+    settings = get_settings()
+    email_papa = (inp.get("email") or "").strip()
+    correo_enviado = False
+    try:
+        subj_lily, body_lily = render_cita_pendiente_email(
+            nombre_papa=inp.get("nombre_papa"),
+            nombre_hijo=inp.get("nombre_hijo"),
+            edad_hijo=inp.get("edad_hijo"),
+            nivel=nivel_lead,
+            fecha_hora_iso=dt.isoformat(),
+            canal=canal.value,
+            appointment_id=appt_id,
+            approval_url=settings.appointment_approval_url or None,
+        )
+        if settings.lily_email:
+            await send_email(settings.lily_email, subj_lily, body_lily)
+        if email_papa:
+            subj_p, text_p, html_p = render_confirmacion_email_papa(
+                nombre_papa=inp.get("nombre_papa"), fecha_hora=dt, campus=campus
             )
+            res = await send_email(email_papa, subj_p, text_p, html=html_p)
+            correo_enviado = bool(getattr(res, "delivered", False))
+    except Exception as exc:  # pragma: no cover
+        log.warning("envío de correos falló", extra={"error": str(exc), "appt_id": appt_id})
+    return correo_enviado
 
-    dia_iso = inp.get("dia_iso", "")
-    hora = inp.get("hora", "")
-    dt = _parse_slot(dia_iso, hora)
+
+async def _marcar_conversacion_agendada(session_id: str, dt: datetime) -> None:
+    """Best-effort: marca la conversación como agendada con la fecha vigente."""
+    try:
+        repo = get_repository()
+        estado = await repo.get_conversation(session_id)
+        if estado is not None:
+            estado.agendado = True
+            estado.fecha_agendado = dt
+            estado.estado_capturado.cita_agendada = True
+            await repo.upsert_conversation(estado)
+    except Exception as exc:  # pragma: no cover
+        log.warning("no se pudo marcar agendado", extra={"error": str(exc), "session_id": session_id})
+
+
+def _texto_confirmacion(*, dt: datetime, campus, correo_enviado: bool, reagendada: bool) -> str:
+    """Texto que ve el modelo: fecha + campus + link de Maps EXACTO (de la tabla)."""
+    maps_url = (campus.google_maps_url if campus else None) or ""
+    lugar = f" en {campus.nombre} ({campus.direccion_legible()})" if campus else ""
+    verbo = "reprogramada" if reagendada else "registrada (pendiente de confirmación de Lily)"
+    partes = [f"✅ Cita {verbo} para el {_fecha_es(dt)} a las {_hora_es(dt)}{lugar}."]
+    if maps_url:
+        partes.append(f"Incluye en tu respuesta este link de Google Maps TAL CUAL: {maps_url}")
+    if correo_enviado:
+        partes.append("Ya le enviamos un correo de confirmación con todos los datos.")
+    partes.append("Confírmale al papá con calidez la fecha, la hora, la dirección y el link de Maps.")
+    return " ".join(partes)
+
+
+async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: Canal) -> str:
+    dt = _parse_slot(inp.get("dia_iso", ""), inp.get("hora", ""))
     if dt is None:
         return "No pude interpretar la fecha/hora. Pídele al papá el día y la hora de nuevo."
 
-    # 1. Verificar disponibilidad real con la agenda de Lily.
+    nivel = (inp.get("nivel") or "").lower()
+    nivel_lead = nivel if nivel in ("maternal", "kinder", "primaria", "secundaria") else None
+    campus, campus_id = await _resolver_campus(nivel, inp.get("edad_hijo"))
+
+    # IDEMPOTENCIA / REAGENDADO: se basa en la cita REAL del lead, no en una bandera
+    # (que puede quedar huérfana). Si ya hay cita pendiente:
+    #   - mismo horario → idempotente (solo confirma, sin recrear).
+    #   - horario distinto → REPROGRAMA la cita existente y reenvía la confirmación.
+    lead = await get_lead_by_session(session_id)
+    existente = await get_pending_appointment_by_lead(lead.id) if lead else None
+    if existente is not None:
+        exist_dt = existente.fecha_hora
+        if exist_dt.tzinfo is not None:
+            exist_dt = exist_dt.astimezone(TZ_MONTERREY)
+        if abs((exist_dt - dt).total_seconds()) < 60:
+            return _texto_confirmacion(dt=exist_dt, campus=campus, correo_enviado=False, reagendada=False)
+
+        # Reprogramar a un horario distinto.
+        disp = await is_slot_available(dt)
+        if not disp.available:
+            if disp.alternativas:
+                alts = "; ".join(f"{_fecha_es(a)} a las {_hora_es(a)}" for a in disp.alternativas)
+                return (
+                    f"Ese horario no está disponible ({disp.mensaje}). Ofrécele estas alternativas "
+                    f"y vuelve a llamar la tool cuando elija: {alts}."
+                )
+            return f"Ese horario no está disponible: {disp.mensaje} Pregúntale otra fecha/hora."
+
+        campos = {"fecha_hora": dt}
+        if campus_id is not None:
+            campos["campus_id"] = campus_id
+        if not await update_appointment(existente.id, campos):
+            return "No pude mover la cita en el sistema. Pídele que intente de nuevo en un momento."
+        await _marcar_conversacion_agendada(session_id, dt)
+        correo = await _enviar_correos_cita(
+            inp=inp, dt=dt, campus=campus, appt_id=existente.id, canal=canal, nivel_lead=nivel_lead
+        )
+        return _texto_confirmacion(dt=dt, campus=campus, correo_enviado=correo, reagendada=True)
+
+    # NUEVA cita: verificar disponibilidad real con la agenda de Lily.
     disp = await is_slot_available(dt)
     if not disp.available:
         if disp.alternativas:
@@ -486,21 +583,7 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
             )
         return f"Ese horario no está disponible: {disp.mensaje} Pregúntale otra fecha/hora."
 
-    nivel = (inp.get("nivel") or "").lower()
-    nivel_lead = nivel if nivel in ("maternal", "kinder", "primaria", "secundaria") else None
-
-    # 2. Resolver campus desde el nivel (para la cita, el link de Maps y la
-    # confirmación). El campus se indexa por sub-nivel (primaria_baja/alta), así que
-    # mapeamos 'primaria' por edad: 1°-3° (≤8a) = baja (Campus 1); 4°-6° = alta (Campus 2).
-    nivel_campus = nivel
-    if nivel == "primaria":
-        edad = inp.get("edad_hijo")
-        nivel_campus = "primaria_alta" if (edad is not None and edad >= 9) else "primaria_baja"
-    campus = await get_campus_para_nivel(nivel_campus) if nivel_campus else None
-    campus_id = campus.id if campus else None
-
-    # 3. Crear / reutilizar el lead.
-    lead = await get_lead_by_session(session_id)
+    # Crear / reutilizar el lead.
     lead_id = lead.id if lead else None
     if lead_id is None:
         lead_id = await create_lead(
@@ -520,16 +603,12 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
             "para que Lily lo contacte directamente y confirme."
         )
 
-    # 4. Crear la cita (status pendiente; Lily la confirma).
     notas = (
         f"Cita agendada por Sofía Pro. Hijo: {inp.get('nombre_hijo')} "
         f"({inp.get('edad_hijo')} años, {nivel}). Tel: {inp.get('telefono')}."
     )
     appt_id = await create_appointment(
-        lead_id=lead_id,
-        fecha_hora=dt,
-        notas=notas,
-        campus_id=campus_id,
+        lead_id=lead_id, fecha_hora=dt, notas=notas, campus_id=campus_id
     )
     if appt_id is None:
         return (
@@ -537,10 +616,7 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
             "contacte y confirme la visita."
         )
 
-    # 4b. Avanzar el stage del lead a 'cita_agendada' + emitir eventos. Es lo que
-    # hace que la cita aparezca en el pipeline/panel de admisiones (Maple Platform
-    # filtra por stage). BEST-EFFORT: la cita YA está creada; ningún error aquí la
-    # debe tumbar.
+    # Avanzar el stage a 'cita_agendada' + eventos (para el panel). Best-effort.
     fecha_humana = f"{_fecha_es(dt)} a las {_hora_es(dt)}"
     try:
         await emit_event(
@@ -569,65 +645,14 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
                     description=f"Stage avanzó de {lead_now.stage} a cita_agendada",
                     metadata={"from": lead_now.stage, "to": "cita_agendada"},
                 )
-    except Exception as exc:  # pragma: no cover - no debe tumbar el agendado
+    except Exception as exc:  # pragma: no cover
         log.warning("post-agendado (stage/evento) falló", extra={"error": str(exc), "lead_id": lead_id})
 
-    # 5. Marcar la conversación como agendada (best-effort).
-    try:
-        estado = await repo.get_conversation(session_id)
-        if estado is not None:
-            estado.agendado = True
-            estado.fecha_agendado = dt
-            estado.estado_capturado.cita_agendada = True
-            await repo.upsert_conversation(estado)
-    except Exception as exc:  # pragma: no cover - no debe romper el agendado
-        log.warning("no se pudo marcar agendado", extra={"error": str(exc), "session_id": session_id})
-
-    # 6. Correos (best-effort, vía Resend): aviso interno a Lily + confirmación al
-    # papá (con link de Maps clickeable). Nunca bloquean el agendado.
-    settings = get_settings()
-    email_papa = (inp.get("email") or "").strip()
-    correo_enviado = False
-    try:
-        subj_lily, body_lily = render_cita_pendiente_email(
-            nombre_papa=inp.get("nombre_papa"),
-            nombre_hijo=inp.get("nombre_hijo"),
-            edad_hijo=inp.get("edad_hijo"),
-            nivel=nivel_lead,
-            fecha_hora_iso=dt.isoformat(),
-            canal=canal.value,
-            appointment_id=appt_id,
-            approval_url=settings.appointment_approval_url or None,
-        )
-        if settings.lily_email:
-            await send_email(settings.lily_email, subj_lily, body_lily)
-        if email_papa:
-            subj_p, text_p, html_p = render_confirmacion_email_papa(
-                nombre_papa=inp.get("nombre_papa"),
-                fecha_hora=dt,
-                campus=campus,
-            )
-            res = await send_email(email_papa, subj_p, text_p, html=html_p)
-            correo_enviado = bool(getattr(res, "delivered", False))
-    except Exception as exc:  # pragma: no cover - el correo nunca es load-bearing
-        log.warning("envío de correos falló", extra={"error": str(exc), "appt_id": appt_id})
-
-    # 7. Confirmación para el modelo: incluye dirección + link de Maps EXACTO (de la
-    # tabla campus, NO inventado) para que Sofía se lo mande al papá.
-    maps_url = (campus.google_maps_url if campus else None) or ""
-    lugar = f" en {campus.nombre} ({campus.direccion_legible()})" if campus else ""
-    partes = [
-        f"✅ Cita registrada (pendiente de confirmación de Lily) para el {_fecha_es(dt)} a las "
-        f"{_hora_es(dt)}{lugar}.",
-    ]
-    if maps_url:
-        partes.append(f"Incluye en tu respuesta este link de Google Maps TAL CUAL: {maps_url}")
-    if correo_enviado:
-        partes.append("Ya le enviamos un correo de confirmación con todos los datos.")
-    partes.append(
-        "Confírmale al papá con calidez la fecha, la hora, la dirección y el link de Maps."
+    await _marcar_conversacion_agendada(session_id, dt)
+    correo = await _enviar_correos_cita(
+        inp=inp, dt=dt, campus=campus, appt_id=appt_id, canal=canal, nivel_lead=nivel_lead
     )
-    return " ".join(partes)
+    return _texto_confirmacion(dt=dt, campus=campus, correo_enviado=correo, reagendada=False)
 
 
 async def _ejecutar_tool(

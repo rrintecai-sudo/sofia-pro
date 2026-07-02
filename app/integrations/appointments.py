@@ -115,6 +115,38 @@ async def create_appointment(
     return None
 
 
+async def get_pending_appointment_by_lead(
+    lead_id: int, *, settings: Settings | None = None
+) -> Appointment | None:
+    """Devuelve la cita ACTIVA (pendiente/confirmada) más reciente del lead, o None.
+
+    Se usa para idempotencia y reagendado: la idempotencia debe basarse en que la
+    cita EXISTA de verdad, no en una bandera de la conversación (que puede quedar
+    huérfana si la cita se borró)."""
+    settings = settings or get_settings()
+    if not settings.supabase_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.supabase_url}/rest/v1/appointments",
+                headers=_auth(settings),
+                params={
+                    "lead_id": f"eq.{lead_id}",
+                    "status": "in.(pendiente,confirmada)",
+                    "select": "*",
+                    "order": "id.desc",
+                    "limit": "1",
+                },
+            )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as exc:
+        log.warning("get_pending_appointment_by_lead failed", extra={"error": str(exc), "lead_id": lead_id})
+        return None
+    return _row_to_appointment(rows[0]) if rows else None
+
+
 async def get_appointment(
     appointment_id: int, *, settings: Settings | None = None
 ) -> Appointment | None:
