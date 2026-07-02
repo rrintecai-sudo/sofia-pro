@@ -33,6 +33,11 @@ from app.core.state import Canal, EstadoConversacion
 from app.integrations.appointments import create_appointment
 from app.integrations.events import emit_event
 from app.integrations.leads import advance_stage_if_lower, create_lead, get_lead_by_session
+from app.notifications.email import (
+    render_cita_pendiente_email,
+    render_confirmacion_email_papa,
+    send_email,
+)
 from app.observability.costs import calculate_cost
 from app.tools.availability_checker import is_slot_available, proximos_dias_habiles
 from app.tools.becas import get_becas
@@ -91,9 +96,12 @@ confirmártelo" / "eso lo ves a detalle en la visita" y ofrece capturar su Whats
 5. **Becas/descuentos:** solo los OFICIALES (beca por hermanos, socioeconómica) y solo si \
 preguntan; consúltalos con la tool. No ofrezcas descuentos que no existan.
 6. **Dos o más hijos:** atiende a cada uno por su nombre y su grado; no los mezcles.
-7. Antes de **agendar** necesitas: nombre del papá/mamá, su teléfono (WhatsApp), nombre y edad \
-del hijo, y el nivel. Pide lo que falte de forma natural (no como formulario). Ofrece días con \
-`dias_disponibles_visita` y confirma día y hora antes de llamar a `agendar_visita`.
+7. Antes de **agendar** necesitas: nombre del papá/mamá, su teléfono (WhatsApp), su **correo** \
+(para enviarle la confirmación), y nombre, edad y nivel del hijo. Pide lo que falte de forma \
+natural (no como formulario). Ofrece días con `dias_disponibles_visita` y confirma día y hora \
+antes de llamar a `agendar_visita`. Al confirmar la cita, **incluye SIEMPRE la dirección del \
+campus y el link de Google Maps** que te devuelve la tool (cópialo tal cual), y avísale que le \
+llegó un correo de confirmación.
 
 ## Fechas, horas y datos faltantes (errores que NO debes cometer)
 - **Copia las fechas TAL CUAL salen de la herramienta** — el día, el número y el mes exactos. \
@@ -454,8 +462,14 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
     nivel = (inp.get("nivel") or "").lower()
     nivel_lead = nivel if nivel in ("maternal", "kinder", "primaria", "secundaria") else None
 
-    # 2. Resolver campus desde el nivel (para la cita y la confirmación).
-    campus = await get_campus_para_nivel(nivel) if nivel else None
+    # 2. Resolver campus desde el nivel (para la cita, el link de Maps y la
+    # confirmación). El campus se indexa por sub-nivel (primaria_baja/alta), así que
+    # mapeamos 'primaria' por edad: 1°-3° (≤8a) = baja (Campus 1); 4°-6° = alta (Campus 2).
+    nivel_campus = nivel
+    if nivel == "primaria":
+        edad = inp.get("edad_hijo")
+        nivel_campus = "primaria_alta" if (edad is not None and edad >= 9) else "primaria_baja"
+    campus = await get_campus_para_nivel(nivel_campus) if nivel_campus else None
     campus_id = campus.id if campus else None
 
     # 3. Crear / reutilizar el lead.
@@ -542,11 +556,51 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
     except Exception as exc:  # pragma: no cover - no debe romper el agendado
         log.warning("no se pudo marcar agendado", extra={"error": str(exc), "session_id": session_id})
 
+    # 6. Correos (best-effort, vía Resend): aviso interno a Lily + confirmación al
+    # papá (con link de Maps clickeable). Nunca bloquean el agendado.
+    settings = get_settings()
+    email_papa = (inp.get("email") or "").strip()
+    correo_enviado = False
+    try:
+        subj_lily, body_lily = render_cita_pendiente_email(
+            nombre_papa=inp.get("nombre_papa"),
+            nombre_hijo=inp.get("nombre_hijo"),
+            edad_hijo=inp.get("edad_hijo"),
+            nivel=nivel_lead,
+            fecha_hora_iso=dt.isoformat(),
+            canal=canal.value,
+            appointment_id=appt_id,
+            approval_url=settings.appointment_approval_url or None,
+        )
+        if settings.lily_email:
+            await send_email(settings.lily_email, subj_lily, body_lily)
+        if email_papa:
+            subj_p, text_p, html_p = render_confirmacion_email_papa(
+                nombre_papa=inp.get("nombre_papa"),
+                fecha_hora=dt,
+                campus=campus,
+            )
+            res = await send_email(email_papa, subj_p, text_p, html=html_p)
+            correo_enviado = bool(getattr(res, "delivered", False))
+    except Exception as exc:  # pragma: no cover - el correo nunca es load-bearing
+        log.warning("envío de correos falló", extra={"error": str(exc), "appt_id": appt_id})
+
+    # 7. Confirmación para el modelo: incluye dirección + link de Maps EXACTO (de la
+    # tabla campus, NO inventado) para que Sofía se lo mande al papá.
+    maps_url = (campus.google_maps_url if campus else None) or ""
     lugar = f" en {campus.nombre} ({campus.direccion_legible()})" if campus else ""
-    return (
+    partes = [
         f"✅ Cita registrada (pendiente de confirmación de Lily) para el {_fecha_es(dt)} a las "
-        f"{_hora_es(dt)}{lugar}. Confírmale al papá con calidez la fecha, la hora y el lugar."
+        f"{_hora_es(dt)}{lugar}.",
+    ]
+    if maps_url:
+        partes.append(f"Incluye en tu respuesta este link de Google Maps TAL CUAL: {maps_url}")
+    if correo_enviado:
+        partes.append("Ya le enviamos un correo de confirmación con todos los datos.")
+    partes.append(
+        "Confírmale al papá con calidez la fecha, la hora, la dirección y el link de Maps."
     )
+    return " ".join(partes)
 
 
 async def _ejecutar_tool(
