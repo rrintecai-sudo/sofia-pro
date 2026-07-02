@@ -18,6 +18,7 @@ Flujo de un turno:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -152,11 +153,31 @@ def _hora_es(dt: datetime) -> str:
     return f"{h12}:{dt.minute:02d} {sufijo}"
 
 
-def _build_system_blocks() -> list[dict[str, Any]]:
+# Formato para WhatsApp: NO renderiza markdown. Negrita = *un asterisco*; los links
+# van como URL cruda (clickeable). Va en un bloque NO cacheado (después de la KB).
+_FORMATO_WHATSAPP = (
+    "FORMATO WHATSAPP: escribes por WhatsApp, que NO renderiza markdown. Para negrita usa "
+    "*un solo asterisco* (nunca **doble**). Los enlaces van como URL cruda (https://…), "
+    "NUNCA como [texto](url). Evita encabezados y tablas; usa texto corto con saltos de línea."
+)
+
+# Post-proceso determinista (red de seguridad por si el modelo igual mete markdown).
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
+
+
+def _a_formato_whatsapp(texto: str) -> str:
+    """Convierte markdown residual a formato WhatsApp: [t](url)→'t: url', **x**→*x*."""
+    texto = _MD_LINK.sub(r"\1: \2", texto)
+    texto = _MD_BOLD.sub(r"*\1*", texto)
+    return texto
+
+
+def _build_system_blocks(canal: Canal) -> list[dict[str, Any]]:
     """Bloques del system prompt. La KB (grande y estable) se cachea; la fecha
-    actual va DESPUÉS del breakpoint de cache para no invalidarlo a diario."""
+    actual y el formato por canal van DESPUÉS del breakpoint de cache."""
     ahora = datetime.now(TZ_MONTERREY)
-    return [
+    bloques = [
         {"type": "text", "text": SYSTEM_RULES},
         {
             "type": "text",
@@ -171,6 +192,9 @@ def _build_system_blocks() -> list[dict[str, Any]]:
             ),
         },
     ]
+    if canal == Canal.WHATSAPP:
+        bloques.append({"type": "text", "text": _FORMATO_WHATSAPP})
+    return bloques
 
 
 # ============================================================
@@ -674,7 +698,7 @@ async def procesar_turno_agente(
     # Persistir el mensaje del usuario.
     await repo.insert_message(session_id, "user", mensaje)
 
-    system_blocks = _build_system_blocks()
+    system_blocks = _build_system_blocks(canal)
     client = get_anthropic().client
 
     tot_in = tot_out = tot_cache_read = tot_cache_write = 0
@@ -728,6 +752,10 @@ async def procesar_turno_agente(
         final_text = (
             "Disculpa, se me cruzaron los cables un momento 😅. ¿Me repites tu última pregunta?"
         )
+
+    # WhatsApp no renderiza markdown: red de seguridad determinista.
+    if canal == Canal.WHATSAPP:
+        final_text = _a_formato_whatsapp(final_text)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     cost = calculate_cost(

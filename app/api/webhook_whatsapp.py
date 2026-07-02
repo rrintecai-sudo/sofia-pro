@@ -26,8 +26,8 @@ from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from app.adapters.evolution_client import EvolutionChannel, get_evolution
 from app.config import get_settings
+from app.core.agente import procesar_turno_agente
 from app.core.debounce import get_debouncer
-from app.core.orchestrator import procesar_turno
 from app.core.state import Canal
 
 log = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     # Procesar turno con typing indicator
     typing_task = asyncio.create_task(_keep_typing(evolution, session_id))
     try:
-        result = await procesar_turno(
+        result = await procesar_turno_agente(
             mensaje=claim.joined,
             session_id=session_id,
             canal=Canal.WHATSAPP,
