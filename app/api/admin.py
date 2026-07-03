@@ -13,8 +13,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.adapters.evolution_client import get_evolution
 from app.config import get_settings
 from app.core.learning_mode import (
     FeedbackPending,
@@ -23,6 +24,7 @@ from app.core.learning_mode import (
 )
 from app.core.orchestrator import procesar_turno
 from app.core.repository import get_repository
+from app.core.state import Canal
 
 log = logging.getLogger(__name__)
 
@@ -322,3 +324,60 @@ async def admin_conv_detail(
             "admin_key": k or "",
         },
     )
+
+
+# ============================================================
+# Bandeja de agentes (handoff bot ↔ humano) — usado por el panel
+# ============================================================
+
+
+class InboxSendIn(BaseModel):
+    session_id: str
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/inbox/send")
+async def inbox_send(
+    body: InboxSendIn,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, str]:
+    """Un humano (Lily) responde desde la bandeja del panel.
+
+    Envía el mensaje por WhatsApp (Evolution), lo guarda como mensaje del agente
+    (marcado `sent_by=humano`) y **apaga el bot** para esa conversación
+    (`bot_activo=false`) → Sofía deja de responder ahí (handoff a humano).
+    """
+    _check_admin(x_admin_key)
+    repo = get_repository()
+    evolution = get_evolution()
+    try:
+        await evolution.send_text(body.session_id, body.text)
+    except Exception as exc:
+        log.warning("inbox_send: envío falló", extra={"error": str(exc)})
+        raise HTTPException(status_code=502, detail=f"envío por WhatsApp falló: {exc}") from exc
+
+    await repo.ensure_conversation(body.session_id, Canal.WHATSAPP)
+    await repo.insert_message(
+        body.session_id, "assistant", body.text, metadata={"sent_by": "humano"}
+    )
+    await repo.set_bot_active(body.session_id, False, atendido_por="humano")
+    return {"status": "sent"}
+
+
+class InboxToggleIn(BaseModel):
+    session_id: str
+    bot_activo: bool
+
+
+@router.post("/inbox/toggle")
+async def inbox_toggle(
+    body: InboxToggleIn,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, object]:
+    """Enciende/apaga el bot para una conversación (Lily toma o regresa el chat)."""
+    _check_admin(x_admin_key)
+    repo = get_repository()
+    ok = await repo.set_bot_active(
+        body.session_id, body.bot_activo, atendido_por="bot" if body.bot_activo else "humano"
+    )
+    return {"status": "ok" if ok else "error", "bot_activo": body.bot_activo}
