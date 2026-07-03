@@ -110,6 +110,23 @@ class Repository:
             return True
         return bool(rows[0].get("bot_activo", True))
 
+    async def hay_identificador_humano(self, identificadores: list[str]) -> bool:
+        """¿Alguno de estos identificadores (número o <lid>@lid) está en la lista
+        'solo humano'? Se usa en el webhook para NO responder a contactos que
+        atiende un humano, robusto al formato (@lid vs número)."""
+        ids = [i for i in identificadores if i]
+        if not ids:
+            return False
+        # PostgREST in.(...): los identificadores son dígitos o '<lid>@lid' (sin
+        # comas/paréntesis), así que van tal cual; httpx codifica el '@'.
+        lista = ",".join(f'"{i}"' for i in ids)
+        resp = await self.client.get(
+            "/whatsapp_humano",
+            params={"identificador": f"in.({lista})", "select": "identificador", "limit": "1"},
+        )
+        resp.raise_for_status()
+        return bool(resp.json())
+
     async def set_bot_active(
         self, session_id: str, active: bool, *, atendido_por: str | None = None
     ) -> bool:

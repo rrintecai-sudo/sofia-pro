@@ -124,6 +124,12 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     debouncer = get_debouncer()
     session_id = EvolutionChannel.session_id_for_remote(remote_jid)
 
+    # Identificadores del contacto para el handoff, robustos al formato de WhatsApp
+    # (número normal @s.whatsapp.net vs @lid de privacidad). Juntamos los dígitos
+    # del número (de remoteJid o remoteJidAlt) y el @lid, para que el bloqueo
+    # 'solo humano' coincida sin importar cómo venga direccionado el mensaje.
+    identificadores = _identificadores_contacto(remote_jid, key.get("remoteJidAlt"))
+
     # Normalizar el mensaje a texto
     texto = await _extract_text(data, evolution)
     if not texto:
@@ -146,15 +152,18 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     if not claim.claimed:
         return
 
-    # HANDOFF: si un humano atiende esta conversación (bot_activo=false), el bot
-    # NO responde — pero guardamos el mensaje del papá para que salga en la bandeja.
+    # HANDOFF: si un humano atiende este contacto, el bot NO responde — pero
+    # guardamos el mensaje para la bandeja. Dos señales:
+    #  - lista 'whatsapp_humano' (precarga de contactos de Lily / bloqueo por número),
+    #  - bot_activo=false en la conversación (toggle "Yo atiendo" de la bandeja).
     repo = get_repository()
-    if not await repo.is_bot_active(session_id):
+    es_humano = await repo.hay_identificador_humano(identificadores)
+    if es_humano or not await repo.is_bot_active(session_id):
         await repo.ensure_conversation(session_id, Canal.WHATSAPP)
         await repo.insert_message(session_id, "user", claim.joined)
         log.info(
-            "whatsapp bot inactivo (humano atiende) — mensaje guardado, sin responder",
-            extra={"session_id": session_id},
+            "whatsapp handoff a humano — mensaje guardado, sin responder",
+            extra={"session_id": session_id, "por_lista": es_humano},
         )
         return
 
@@ -186,6 +195,25 @@ async def _handle_event(payload: dict[str, Any]) -> None:
 # ============================================================
 # Extracción de texto / audio / imagen
 # ============================================================
+
+
+def _identificadores_contacto(remote_jid: str, remote_jid_alt: str | None) -> list[str]:
+    """Identificadores estables de un contacto para el handoff, robustos al
+    formato de WhatsApp: dígitos del número (de @s.whatsapp.net/@c.us, sea el
+    remoteJid o su alterno) + el '<lid>@lid' si aplica. Así el bloqueo 'solo
+    humano' coincide venga como venga direccionado el mensaje."""
+    ids: list[str] = []
+    for jid in (remote_jid, remote_jid_alt):
+        if not jid or not isinstance(jid, str):
+            continue
+        if jid.endswith("@s.whatsapp.net") or jid.endswith("@c.us"):
+            num = jid.split("@", 1)[0].split(":", 1)[0]
+            digits = "".join(ch for ch in num if ch.isdigit())
+            if digits:
+                ids.append(digits)
+        elif jid.endswith("@lid"):
+            ids.append(jid)
+    return list(dict.fromkeys(ids))
 
 
 async def _extract_text(data: dict[str, Any], evolution: EvolutionChannel) -> str:
