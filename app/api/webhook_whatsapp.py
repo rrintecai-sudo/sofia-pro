@@ -28,6 +28,7 @@ from app.adapters.evolution_client import EvolutionChannel, get_evolution
 from app.config import get_settings
 from app.core.agente import procesar_turno_agente
 from app.core.debounce import get_debouncer
+from app.core.repository import get_repository
 from app.core.state import Canal
 
 log = logging.getLogger(__name__)
@@ -143,6 +144,18 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     # try_claim — sólo el último seq_id procesa el turno
     claim = await debouncer.try_claim(session_id, seq_id)
     if not claim.claimed:
+        return
+
+    # HANDOFF: si un humano atiende esta conversación (bot_activo=false), el bot
+    # NO responde — pero guardamos el mensaje del papá para que salga en la bandeja.
+    repo = get_repository()
+    if not await repo.is_bot_active(session_id):
+        await repo.ensure_conversation(session_id, Canal.WHATSAPP)
+        await repo.insert_message(session_id, "user", claim.joined)
+        log.info(
+            "whatsapp bot inactivo (humano atiende) — mensaje guardado, sin responder",
+            extra={"session_id": session_id},
+        )
         return
 
     # Procesar turno con typing indicator

@@ -88,6 +88,49 @@ class Repository:
             )
             resp.raise_for_status()
 
+    async def ensure_conversation(self, session_id: str, canal: Canal) -> None:
+        """Crea la conversación si no existe (para poder guardar mensajes)."""
+        if await self.get_conversation(session_id) is None:
+            await self.upsert_conversation(EstadoConversacion.nueva(session_id))
+
+    # ----------------------------------------------------------------
+    # Handoff bot ↔ humano (Bloque WhatsApp inbox)
+    # ----------------------------------------------------------------
+
+    async def is_bot_active(self, session_id: str) -> bool:
+        """¿El bot debe responder en esta conversación? Default True (conversación
+        nueva o sin bandera). False = la atiende un humano (Lily)."""
+        resp = await self.client.get(
+            "/sofia_conversations",
+            params={"session_id": f"eq.{session_id}", "select": "bot_activo"},
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
+            return True
+        return bool(rows[0].get("bot_activo", True))
+
+    async def set_bot_active(
+        self, session_id: str, active: bool, *, atendido_por: str | None = None
+    ) -> bool:
+        """Enciende/apaga el bot para una conversación (handoff). `atendido_por`
+        opcional: 'bot' | 'humano'."""
+        payload: dict[str, Any] = {"bot_activo": active}
+        if atendido_por:
+            payload["atendido_por"] = atendido_por
+        resp = await self.client.patch(
+            "/sofia_conversations",
+            params={"session_id": f"eq.{session_id}"},
+            json=payload,
+        )
+        if resp.status_code >= 400:
+            log.error(
+                "set_bot_active failed",
+                extra={"status": resp.status_code, "body": resp.text[:200]},
+            )
+            return False
+        return True
+
     # ----------------------------------------------------------------
     # sofia_messages
     # ----------------------------------------------------------------
