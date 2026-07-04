@@ -36,7 +36,7 @@ GRACE = timedelta(minutes=35)  # margen tras cruzar el umbral (cubre el polling)
 OFFSETS = [
     ("24h", timedelta(hours=24)),
     ("2h", timedelta(hours=2)),
-    ("1h", timedelta(hours=1)),
+    ("30m", timedelta(minutes=30)),
 ]
 
 
@@ -64,7 +64,7 @@ def _mensaje(tipo: str, nombre: str, dt_local: datetime) -> str:
             f"{_fmt_hora(dt_local)} (en unas 2 horas). ¡Te esperamos! 😊"
         )
     return (
-        f"{saludo} Te esperamos en aproximadamente 1 hora para tu cita de informes en "
+        f"{saludo} Te esperamos en aproximadamente 30 minutos para tu cita de informes en "
         f"Maple Collège (hoy a las {_fmt_hora(dt_local)}). 📍"
     )
 
