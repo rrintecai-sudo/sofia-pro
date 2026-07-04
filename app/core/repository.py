@@ -13,6 +13,7 @@ Esquema en migrations/001_init_schema.sql:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -147,6 +148,93 @@ class Repository:
             )
             return False
         return True
+
+    # ----------------------------------------------------------------
+    # Contactos de WhatsApp (nombres para la bandeja del panel)
+    # ----------------------------------------------------------------
+
+    async def upsert_contacto(
+        self,
+        identificador: str,
+        *,
+        pushname: str | None = None,
+        nombre_guardado: str | None = None,
+    ) -> None:
+        """Guarda/actualiza el nombre de un contacto de WhatsApp por número.
+
+        - `pushname`: el nombre que el contacto se puso a sí mismo (viene en cada
+          mensaje). - `nombre_guardado`: el nombre en la agenda del teléfono de la
+          línea (lo que Lily guardó), obtenido vía Evolution findContacts.
+        Solo escribe los campos provistos (upsert merge), sin pisar el otro.
+        """
+        if not identificador:
+            return
+        payload: dict[str, Any] = {
+            "identificador": identificador,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if pushname:
+            payload["pushname"] = pushname
+        if nombre_guardado:
+            payload["nombre_guardado"] = nombre_guardado
+        if len(payload) == 2:  # solo identificador + updated_at → nada que guardar
+            return
+        try:
+            resp = await self.client.post(
+                "/whatsapp_contactos",
+                params={"on_conflict": "identificador"},
+                headers={"Prefer": "resolution=merge-duplicates"},
+                json=payload,
+            )
+            if resp.status_code >= 400:
+                log.warning(
+                    "upsert_contacto failed",
+                    extra={"status": resp.status_code, "body": resp.text[:200]},
+                )
+        except Exception as exc:  # nunca romper el flujo del webhook por esto
+            log.warning("upsert_contacto error", extra={"error": str(exc)})
+
+    # ----------------------------------------------------------------
+    # Recordatorios de cita
+    # ----------------------------------------------------------------
+
+    async def fetch_upcoming_appointments(
+        self, now_iso: str, horizon_iso: str
+    ) -> list[dict[str, Any]]:
+        """Citas próximas (status pendiente/confirmada) entre ahora y el horizonte,
+        con los datos del lead (nombre, session, teléfono) para el recordatorio."""
+        resp = await self.client.get(
+            "/appointments",
+            params={
+                "select": "id,fecha_hora,status,leads(parent_name,conversation_session_id,parent_phone)",
+                "status": "in.(pendiente,confirmada)",
+                "and": f"(fecha_hora.gte.{now_iso},fecha_hora.lte.{horizon_iso})",
+                "order": "fecha_hora.asc",
+            },
+        )
+        resp.raise_for_status()
+        return list(resp.json())
+
+    async def fetch_sent_reminders(self, appt_ids: list[int]) -> set[tuple[int, str]]:
+        """Qué recordatorios (appointment_id, tipo) ya se enviaron, para no repetir."""
+        if not appt_ids:
+            return set()
+        lista = ",".join(str(i) for i in appt_ids)
+        resp = await self.client.get(
+            "/appointment_reminders",
+            params={"appointment_id": f"in.({lista})", "select": "appointment_id,tipo"},
+        )
+        resp.raise_for_status()
+        return {(int(r["appointment_id"]), r["tipo"]) for r in resp.json()}
+
+    async def mark_reminder_sent(self, appointment_id: int, tipo: str) -> bool:
+        """Registra que se envió un recordatorio. 409 (ya existe) = no re-enviar."""
+        resp = await self.client.post(
+            "/appointment_reminders",
+            json={"appointment_id": appointment_id, "tipo": tipo},
+            headers={"Prefer": "return=minimal"},
+        )
+        return resp.status_code < 400
 
     # ----------------------------------------------------------------
     # sofia_messages

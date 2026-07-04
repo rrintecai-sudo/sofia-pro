@@ -44,7 +44,11 @@ from app.notifications.email import (
     send_email,
 )
 from app.observability.costs import calculate_cost
-from app.tools.availability_checker import is_slot_available, proximos_dias_habiles
+from app.tools.availability_checker import (
+    evaluar_dia,
+    is_slot_available,
+    proximos_dias_habiles,
+)
 from app.tools.becas import get_becas
 from app.tools.campus import get_campus_by_id, get_campus_para_nivel
 from app.tools.estancias import get_estancias, render_estancias_bloque
@@ -106,10 +110,14 @@ preguntan; consúltalos con la tool. No ofrezcas descuentos que no existan.
 natural (no como formulario). **Pregunta el nombre del papá/mamá y el del hijo POR SEPARADO y \
 con claridad** (p. ej. primero "¿cómo te llamas tú?" y luego "¿y cómo se llama tu hijo/a?"). Si \
 el papá te da un solo nombre, **aclara de quién es** antes de agendar; **NUNCA registres el \
-mismo nombre como papá y como hijo** salvo que lo confirme. Ofrece días con \
-`dias_disponibles_visita` y confirma día y hora antes de llamar a `agendar_visita`. Al confirmar \
-la cita, **incluye SIEMPRE la dirección del campus y el link de Google Maps** que te devuelve la \
-tool (cópialo tal cual), y avísale que le llegó un correo de confirmación.
+mismo nombre como papá y como hijo** salvo que lo confirme. Llama `dias_disponibles_visita` y \
+**ofrece el día JUNTO CON sus horarios concretos en UN SOLO mensaje** (ej. "Tenemos el martes 8 \
+a las 9:00, 10:00 u 11:00 a.m. — ¿cuál te acomoda?"), NO en dos mensajes separados. Copia los \
+horarios TAL CUAL te los da la tool. Si el papá dice que **ninguna** de esas opciones le sirve, \
+NO insistas ni sigas ofreciendo: dile que **Lily lo contactará directamente** para agendar sin \
+problema y captura su WhatsApp y correo. Cuando el papá elija día y hora, llama `agendar_visita`. \
+Al confirmar la cita, **incluye SIEMPRE la dirección del campus y el link de Google Maps** que te \
+devuelve la tool (cópialo tal cual), y avísale que le llegó un correo de confirmación.
 
 ## Fechas, horas y datos faltantes (errores que NO debes cometer)
 - **Copia las fechas TAL CUAL salen de la herramienta** — el día, el número y el mes exactos. \
@@ -270,7 +278,7 @@ TOOLS_SPEC: list[dict[str, Any]] = [
     },
     {
         "name": "dias_disponibles_visita",
-        "description": "Próximos días hábiles con cupo para una cita de informes con Lily. Úsala antes de ofrecer fechas.",
+        "description": "Próximos días hábiles CON SUS HORARIOS concretos libres para una cita de informes con Lily. Úsala antes de ofrecer fechas y ofrece día+horarios juntos en un mensaje.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -412,19 +420,33 @@ async def _tool_consultar_becas(_inp: dict[str, Any]) -> str:
 
 
 async def _tool_dias_disponibles_visita(_inp: dict[str, Any]) -> str:
+    _FALLBACK = (
+        "No tengo horarios libres a la mano ahora. NO inventes horarios: dile al papá que "
+        "Lily lo contactará directamente para agendar, y captura su WhatsApp y correo."
+    )
     dias = await proximos_dias_habiles(cantidad=3)
     if not dias:
-        return "No tengo días disponibles a la mano ahora. Ofrece tomar sus datos para que Lily lo contacte."
+        return _FALLBACK
     hoy = datetime.now(TZ_MONTERREY).date()
-    lineas = []
+    bloques = []
     for d in dias:
+        # evaluar_dia devuelve las HORAS libres concretas de ese día.
+        res = await evaluar_dia(d)
+        if not res.available or not res.alternativas:
+            continue
         etq = " (hoy)" if d.date() == hoy else ""
-        # Incluye el ISO para que pases dia_iso EXACTO a agendar_visita.
-        lineas.append(f"- {_fecha_es(d)}{etq}  [dia_iso={d.date().isoformat()}]")
+        horas = res.alternativas[:4]  # máx 4 horarios por día para no abrumar
+        horas_txt = ", ".join(_hora_es(h) for h in horas)
+        bloques.append(f"- {_fecha_es(d)}{etq}: {horas_txt}  [dia_iso={d.date().isoformat()}]")
+    if not bloques:
+        return _FALLBACK
     return (
-        "Días disponibles para la cita (ofrécelos EXACTAMENTE así, sin cambiar el número de día):\n"
-        + "\n".join(lineas)
-        + "\nCuando el papá elija, pasa ese dia_iso TAL CUAL a agendar_visita."
+        "Días y horarios disponibles. Ofrécelos EXACTAMENTE así, en UN SOLO mensaje "
+        "(día + sus horarios juntos), sin cambiar el número de día ni inventar horas:\n"
+        + "\n".join(bloques)
+        + "\nCuando el papá elija, pasa ese dia_iso y la hora TAL CUAL a agendar_visita. "
+        "Si el papá dice que NINGUNA opción le sirve, NO insistas ni ofrezcas más: dile que "
+        "Lily lo contactará directamente para agendar sin problema, y captura su WhatsApp y correo."
     )
 
 

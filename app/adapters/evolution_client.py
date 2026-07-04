@@ -129,6 +129,30 @@ class EvolutionChannel:
         )
         resp.raise_for_status()
 
+    # ---------- contactos ----------
+
+    async def find_contacts(self) -> list[dict[str, Any]]:
+        """Contactos de la instancia = agenda del teléfono de la línea (lo que Lily
+        guardó). Cada contacto trae 'id' (jid), 'pushName' y 'name' (nombre guardado).
+        Best-effort: si el endpoint falla, devuelve lista vacía."""
+        try:
+            resp = await self.http.post(f"/chat/findContacts/{self.instance}", json={})
+            if resp.status_code >= 400:
+                log.warning(
+                    "evolution findContacts failed",
+                    extra={"status": resp.status_code, "body": resp.text[:200]},
+                )
+                return []
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("contacts") or data.get("data") or []
+            return []
+        except Exception as exc:
+            log.warning("evolution findContacts error", extra={"error": str(exc)})
+            return []
+
     async def mark_as_read(self, session_id: str, message_id: str) -> None:
         """Marca el mensaje como leído. `message_id` viene del Webhook de Evolution."""
         remote_jid = self.remote_jid_from_session(session_id)

@@ -124,6 +124,14 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     debouncer = get_debouncer()
     session_id = EvolutionChannel.session_id_for_remote(remote_jid)
 
+    # Capturar el pushName (nombre que el contacto se puso a sí mismo) para que la
+    # bandeja del panel muestre un nombre en vez del número crudo. Best-effort: la
+    # clave es el mismo número que deriva el panel del session_id (parte antes de @).
+    push_name = data.get("pushName") or data.get("pushname")
+    if push_name and isinstance(push_name, str):
+        numero_contacto = remote_jid.split("@", 1)[0]
+        await get_repository().upsert_contacto(numero_contacto, pushname=push_name.strip())
+
     # Identificadores del contacto para el handoff, robustos al formato de WhatsApp
     # (número normal @s.whatsapp.net vs @lid de privacidad). Juntamos los dígitos
     # del número (de remoteJid o remoteJidAlt) y el @lid, para que el bloqueo

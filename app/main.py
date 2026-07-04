@@ -55,10 +55,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         log.warning("redis connection failed at startup", extra={"error": str(exc)})
 
+    # Programador en proceso: recordatorios de cita (24h/2h/1h) + sync de nombres
+    # de contactos de WhatsApp. Single-replica → sin doble envío.
+    import asyncio
+
+    from app.core.scheduler import run_scheduler
+
+    scheduler_task = asyncio.create_task(run_scheduler())
+
     yield
 
     # Shutdown
     log.info("shutting down sofia-maple")
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
     await pg.disconnect()
     await redis.disconnect()
     await get_repository().close()
