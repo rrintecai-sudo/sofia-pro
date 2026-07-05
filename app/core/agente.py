@@ -197,7 +197,10 @@ def _build_system_blocks(canal: Canal) -> list[dict[str, Any]]:
         {
             "type": "text",
             "text": "# BASE DE CONOCIMIENTO OFICIAL\n\n" + _load_kb(),
-            "cache_control": {"type": "ephemeral"},
+            # TTL de 1 hora: las charlas de WhatsApp son lentas (el papá tarda en
+            # responder). Con 5 min el caché expira entre turnos y se re-cobra la KB
+            # completa cada vez; con 1 h se mantiene caliente toda la conversación.
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
         },
         {
             "type": "text",
