@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     anthropic_model_juez: str = "claude-sonnet-4-6"
     openai_api_key: str = ""
     openai_model_auxiliar: str = "gpt-4o-mini"
+    # Modelo principal cuando el motor es OpenAI (sofia_engine=openai).
+    openai_model_principal: str = "gpt-4o-mini"
     openai_model_embeddings: str = "text-embedding-3-small"
     openai_embedding_dim: int = 1536
 
@@ -83,6 +85,11 @@ class Settings(BaseSettings):
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_refresh_token: str = ""
+
+    # --- Motor de Sofía (dos Sofias en paralelo) ---
+    # 'anthropic' (Sonnet, aprobada) o 'openai' (gpt-4o-mini). Cada servicio corre
+    # con su valor; se conmuta apuntando el webhook de WhatsApp al servicio deseado.
+    sofia_engine: Literal["anthropic", "openai"] = "anthropic"
 
     # --- Feature flags ---
     enable_prompt_caching: bool = True
