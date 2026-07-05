@@ -381,3 +381,57 @@ async def inbox_toggle(
         body.session_id, body.bot_activo, atendido_por="bot" if body.bot_activo else "humano"
     )
     return {"status": "ok" if ok else "error", "bot_activo": body.bot_activo}
+
+
+# ── Motor de Sofía: switch Sonnet ↔ gpt-4o-mini (apunta el webhook de WhatsApp) ──
+ENGINE_WEBHOOKS = {
+    "sonnet": "https://sofia-pro.cxjnjn.easypanel.host/webhook/whatsapp",
+    "gpt": "https://sofia-gpt.cxjnjn.easypanel.host/webhook/whatsapp",
+}
+ENGINE_LABEL = {"sonnet": "Sonnet (Claude)", "gpt": "gpt-4o-mini (OpenAI)"}
+
+
+class _EngineIn(BaseModel):
+    engine: Literal["sonnet", "gpt"]
+
+
+async def _webhook_engine_actual() -> dict[str, Any]:
+    """Lee a qué servicio apunta hoy el webhook de WhatsApp → qué motor contesta."""
+    evo = get_evolution()
+    try:
+        resp = await evo.http.get(f"/webhook/find/{evo.instance}")
+        url = resp.json().get("url", "") if resp.status_code < 400 else ""
+    except Exception as exc:  # noqa: BLE001
+        return {"engine": None, "webhook_url": "", "error": str(exc)}
+    engine = next((k for k, v in ENGINE_WEBHOOKS.items() if v == url), None)
+    return {"engine": engine, "label": ENGINE_LABEL.get(engine or ""), "webhook_url": url}
+
+
+@router.get("/engine")
+async def obtener_engine(
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, Any]:
+    _check_admin(x_admin_key)
+    return await _webhook_engine_actual()
+
+
+@router.post("/engine")
+async def cambiar_engine(
+    body: _EngineIn,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, Any]:
+    """Conmuta la Sofía activa apuntando el webhook al servicio correspondiente."""
+    _check_admin(x_admin_key)
+    target = ENGINE_WEBHOOKS[body.engine]
+    evo = get_evolution()
+    payload = {
+        "webhook": {
+            "enabled": True,
+            "url": target,
+            "events": ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
+        }
+    }
+    resp = await evo.http.post(f"/webhook/set/{evo.instance}", json=payload)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Evolution: {resp.status_code} {resp.text[:200]}")
+    return {"ok": True, "engine": body.engine, "label": ENGINE_LABEL[body.engine], "webhook_url": target}
