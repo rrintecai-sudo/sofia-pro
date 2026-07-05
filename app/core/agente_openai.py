@@ -46,13 +46,40 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# Afinado SOLO para el motor OpenAI (gpt-4o-mini sigue el prompt más al pie de la
+# letra; estas reglas corrigen lo que se observó en pruebas). NO afecta a Sonnet.
+_OPENAI_TUNING = """
+# INSTRUCCIONES CRÍTICAS DE OPERACIÓN (síguelas al pie de la letra)
+- CONTESTA PRIMERO, EMPUJA DESPUÉS. Si el papá hace una pregunta concreta (precio,
+  nivel, inglés, horario, becas), RESPÓNDELA de una vez con el dato real de la base
+  de conocimiento o las tools. NUNCA respondas solo con otra pregunta ("¿en qué
+  grado?") cuando ya puedes dar la respuesta. Ej.: si preguntan el precio de
+  primaria, DA los dos rangos ($6,100 de 1° a 3°, $6,300 de 4° a 6°) y, si hace
+  falta, luego preguntas el grado.
+- NUNCA inventes días ni horarios. Antes de ofrecer o confirmar CUALQUIER día u
+  hora, llama SIEMPRE la tool `dias_disponibles_visita` y ofrece EXACTAMENTE lo que
+  devuelva (día + sus horarios juntos, en un solo mensaje). Si no llamaste la tool,
+  no menciones ningún día ni hora.
+- Mapea la edad al nivel correcto con la KB (p. ej. 3 años = 1° de Kinder; 6 años =
+  1° de Primaria). No lo dejes vago.
+- Para agendar, llama `agendar_visita` solo cuando tengas los datos. El WhatsApp del
+  papá se captura AUTOMÁTICAMENTE por el sistema: NO lo pidas y NUNCA pongas el
+  correo en el campo de teléfono. Pide solo lo que falte (nombre del papá/mamá,
+  correo, y nombre y edad del hijo).
+- Si el papá dice que NINGUNA de las opciones de horario le sirve, NO insistas: dile
+  que Lily lo contactará directamente para agendar, y captura su correo.
+"""
+
+
 def _system_text(canal: Canal) -> str:
     """Convierte los bloques de system de Anthropic a un solo mensaje de sistema.
 
     Mantiene el orden (reglas + KB estable primero, contexto temporal al final), lo
     que además deja que el caché automático de OpenAI reuse el prefijo estable.
+    Agrega el bloque de afinado específico de OpenAI al final.
     """
-    return "\n\n".join(b["text"] for b in _build_system_blocks(canal))
+    base = "\n\n".join(b["text"] for b in _build_system_blocks(canal))
+    return base + "\n\n" + _OPENAI_TUNING
 
 
 async def procesar_turno_openai(
