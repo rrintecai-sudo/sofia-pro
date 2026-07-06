@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.core.agente import procesar_turno_agente
+from app.core.sofia_engine import procesar_turno_sofia
 from app.core.repository import get_repository
 from app.core.state import Canal
 
@@ -101,7 +101,7 @@ async def webhook_web(
         sofia_web_session = str(uuid.uuid4())
     session_id = f"web:{sofia_web_session}"
 
-    result = await procesar_turno_agente(
+    result = await procesar_turno_sofia(
         mensaje=body.content,
         session_id=session_id,
         canal=Canal.WEB,
