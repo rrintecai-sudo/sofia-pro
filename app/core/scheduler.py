@@ -113,9 +113,15 @@ async def tick_reminders() -> None:
             # Enviar solo al cruzar el umbral (dentro de la ventana de gracia); si la
             # cita se creó ya pasado el umbral, ese recordatorio se omite.
             if offset - GRACE < remaining <= offset:
+                # RECLAMAR ANTES DE ENVIAR: insertamos la fila (PK appointment_id+tipo)
+                # primero. Si el insert lo gana este proceso (True), enviamos; si otro
+                # proceso ya lo reclamó (409 → False), NO enviamos. Así nunca se
+                # duplica, aunque haya más de un programador corriendo.
+                claimed = await repo.mark_reminder_sent(int(a["id"]), tipo)
+                if not claimed:
+                    continue
                 try:
                     await evo.send_text(sid, _mensaje(tipo, nombre, dt_local))
-                    await repo.mark_reminder_sent(int(a["id"]), tipo)
                     log.info(
                         "recordatorio enviado",
                         extra={"appointment": a["id"], "tipo": tipo},

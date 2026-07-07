@@ -55,23 +55,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         log.warning("redis connection failed at startup", extra={"error": str(exc)})
 
-    # Programador en proceso: recordatorios de cita (24h/2h/1h) + sync de nombres
-    # de contactos de WhatsApp. Single-replica → sin doble envío.
+    # Programador en proceso: recordatorios de cita (24h/2h/30m) + sync de nombres.
+    # SOLO un servicio debe correrlo (enable_scheduler); si dos lo corren, los
+    # recordatorios se duplican. En sofia-gpt va apagado.
     import asyncio
 
-    from app.core.scheduler import run_scheduler
+    scheduler_task = None
+    if settings.enable_scheduler:
+        from app.core.scheduler import run_scheduler
 
-    scheduler_task = asyncio.create_task(run_scheduler())
+        scheduler_task = asyncio.create_task(run_scheduler())
+        log.info("scheduler habilitado en este servicio")
+    else:
+        log.info("scheduler DESHABILITADO en este servicio (enable_scheduler=false)")
 
     yield
 
     # Shutdown
     log.info("shutting down sofia-maple")
-    scheduler_task.cancel()
-    try:
-        await scheduler_task
-    except asyncio.CancelledError:
-        pass
+    if scheduler_task is not None:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
     await pg.disconnect()
     await redis.disconnect()
     await get_repository().close()

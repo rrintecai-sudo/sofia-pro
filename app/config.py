@@ -93,6 +93,9 @@ class Settings(BaseSettings):
 
     # --- Feature flags ---
     enable_prompt_caching: bool = True
+    # Programador de recordatorios: SOLO un servicio debe correrlo (si no, los
+    # recordatorios llegan duplicados). En sofia-gpt se pone en false.
+    enable_scheduler: bool = True
     enable_validators: bool = True
     max_regenerations_per_turn: int = Field(default=2, ge=0, le=5)
     # Tope de preguntas en el texto libre de Haiku (guard de salida). Subir a 2 si
