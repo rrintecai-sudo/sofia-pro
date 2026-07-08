@@ -383,6 +383,62 @@ async def inbox_toggle(
     return {"status": "ok" if ok else "error", "bot_activo": body.bot_activo}
 
 
+# ── Leads silenciados por la lista (blocklist demasiado amplia) ──
+
+
+@router.get("/leads-silenciados")
+async def leads_silenciados(
+    horas: int = Query(default=72, ge=1, le=720),
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> list[dict[str, Any]]:
+    """Números que están en la lista 'humano' pero escribieron y NO recibieron
+    respuesta — posibles leads perdidos por la precarga del cutover."""
+    _check_admin(x_admin_key)
+    return await get_repository().leads_silenciados(horas=horas)
+
+
+class ReactivarLeadIn(BaseModel):
+    session_id: str
+    responder: bool = True  # además de desbloquear, que Sofía conteste ya
+
+
+@router.post("/reactivar-lead")
+async def reactivar_lead(
+    body: ReactivarLeadIn,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, Any]:
+    """Saca el número de la lista 'humano', reactiva el bot y (opcional) hace que
+    Sofía responda ya al último mensaje pendiente."""
+    _check_admin(x_admin_key)
+    repo = get_repository()
+    numero = "".join(ch for ch in body.session_id.partition(":")[2].split("@")[0] if ch.isdigit())
+    await repo.quitar_de_humano(numero)
+    await repo.set_bot_active(body.session_id, True, atendido_por="bot")
+
+    respondio = False
+    respuesta: str | None = None
+    if body.responder:
+        ultimo = await repo.ultimo_mensaje_usuario(body.session_id)
+        if ultimo:
+            from app.core.sofia_engine import procesar_turno_sofia
+
+            res = await procesar_turno_sofia(
+                mensaje=ultimo, session_id=body.session_id, canal=Canal.WHATSAPP
+            )
+            try:
+                await get_evolution().send_text(body.session_id, res.response)
+                respondio = True
+                respuesta = res.response
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reactivar_lead: envío falló", extra={"error": str(exc)})
+    return {
+        "ok": True,
+        "numero": numero,
+        "respondio": respondio,
+        "respuesta": respuesta,
+    }
+
+
 # ── Motor de Sofía: switch Sonnet ↔ gpt-4o-mini (apunta el webhook de WhatsApp) ──
 ENGINE_WEBHOOKS = {
     "sonnet": "https://sofia-pro.cxjnjn.easypanel.host/webhook/whatsapp",

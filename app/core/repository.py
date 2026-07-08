@@ -128,6 +128,57 @@ class Repository:
         resp.raise_for_status()
         return bool(resp.json())
 
+    async def quitar_de_humano(self, identificador: str) -> None:
+        """Saca un número de la lista 'solo humano' (para recuperar un lead que la
+        precarga silenció por error)."""
+        if not identificador:
+            return
+        resp = await self.client.delete(
+            "/whatsapp_humano", params={"identificador": f"eq.{identificador}"}
+        )
+        if resp.status_code >= 400:
+            log.warning(
+                "quitar_de_humano failed",
+                extra={"status": resp.status_code, "body": resp.text[:200]},
+            )
+
+    async def ultimo_mensaje_usuario(self, session_id: str) -> str:
+        """Contenido del último mensaje del usuario (para reactivar/responder)."""
+        resp = await self.client.get(
+            "/sofia_messages",
+            params={
+                "session_id": f"eq.{session_id}",
+                "role": "eq.user",
+                "select": "content",
+                "order": "id.desc",
+                "limit": "1",
+            },
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return (rows[0]["content"] if rows else "") or ""
+
+    async def leads_silenciados(self, horas: int = 72) -> list[dict[str, Any]]:
+        """Números que están en la lista 'humano' pero escribieron y NO recibieron
+        respuesta (posibles leads perdidos por la precarga demasiado amplia). Lee la
+        vista `v_leads_silenciados`."""
+        from datetime import datetime, timedelta, timezone
+
+        desde = (datetime.now(timezone.utc) - timedelta(hours=horas)).isoformat()
+        resp = await self.client.get(
+            "/v_leads_silenciados",
+            params={
+                "en_blocklist": "eq.true",
+                "n_asst": "eq.0",
+                "n_user": "gt.0",
+                "created_at": f"gte.{desde}",
+                "order": "last_user_at.desc",
+                "limit": "200",
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def set_bot_active(
         self, session_id: str, active: bool, *, atendido_por: str | None = None
     ) -> bool:
