@@ -170,6 +170,18 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     repo = get_repository()
     es_humano = await repo.hay_identificador_humano(identificadores)
 
+    # LEAD DE ANUNCIO: un clic en anuncio de Facebook/IG es un prospecto nuevo con
+    # intención. Aunque su número esté en la lista 'humano' (la precarga del cutover
+    # barrió leads viejos por error, p.ej. Pati), Sofía SÍ debe atenderlo. No anula
+    # la toma manual de Lily (bot_activo=false), solo el bloqueo por lista.
+    es_anuncio = _es_lead_de_anuncio(data)
+    if es_humano and es_anuncio:
+        log.info(
+            "lead de anuncio en lista 'humano' → Sofía responde igual",
+            extra={"session_id": session_id},
+        )
+        es_humano = False
+
     # CONVERSACIÓN PRE-EXISTENTE: si Sofía nunca ha atendido este chat pero en
     # WhatsApp ya había mensajes de ANTES del cutover, es un cliente que Lily ya
     # venía atendiendo → Sofía se hace a un lado sola (sin que Lily deba vigilar).
@@ -252,6 +264,28 @@ def _texto_propio(data: dict[str, Any]) -> str:
     if isinstance(ext, dict):
         return (ext.get("text") or "").strip()
     return ""
+
+
+# Marcas típicas de un clic en anuncio de Facebook/Instagram (click-to-WhatsApp).
+_AD_KEYS = {"externaladreply", "ctwaclid", "conversionsource"}
+
+
+def _es_lead_de_anuncio(data: dict[str, Any]) -> bool:
+    """True si el mensaje entrante viene de un clic en anuncio (click-to-WhatsApp).
+    Un clic de anuncio es SIEMPRE un prospecto nuevo con intención → Sofía debe
+    responderle aunque el número esté en la lista de 'humano' (la precarga barrió
+    leads viejos por error). Busca las marcas en cualquier parte del payload."""
+
+    def _busca(obj: Any) -> bool:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.lower() in _AD_KEYS or _busca(v):
+                    return True
+        elif isinstance(obj, list):
+            return any(_busca(it) for it in obj)
+        return False
+
+    return _busca(data.get("message"))
 
 
 _CUTOVER_TS: float | None = None
