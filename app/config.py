@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_refresh_token: str = ""
+    # Cuenta de servicio de Google (JSON completo como string). Si está seteada, se
+    # usa para escribir en el Calendar que Lily comparta con el correo de la cuenta
+    # (más simple para ella). Si está vacía, cae a OAuth o a modo simulado.
+    google_service_account_json: str = ""
 
     # --- Motor de Sofía (dos Sofias en paralelo) ---
     # 'anthropic' (Sonnet, aprobada) o 'openai' (gpt-4o-mini). Cada servicio corre

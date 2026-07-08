@@ -12,12 +12,15 @@ Mientras tanto, `agendar_cita` se comporta en dos modos:
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
 import httpx
+import jwt
 
 from app.config import Settings, get_settings
 
@@ -25,6 +28,7 @@ log = logging.getLogger(__name__)
 
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API = "https://www.googleapis.com/calendar/v3"
+GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,8 @@ class CalendarTool:
 
     def is_configured(self) -> bool:
         s = self.settings
+        if s.google_service_account_json.strip():
+            return True
         return bool(
             s.google_oauth_client_id
             and s.google_oauth_client_secret
@@ -55,6 +61,14 @@ class CalendarTool:
         )
 
     async def _refresh_access_token(self) -> str:
+        # Preferimos cuenta de servicio si está configurada (Lily solo comparte su
+        # calendario con el correo de la cuenta — cero fricción del lado de ella).
+        sa_json = self.settings.google_service_account_json.strip()
+        if sa_json:
+            return await self._token_from_service_account(sa_json)
+        return await self._token_from_oauth()
+
+    async def _token_from_oauth(self) -> str:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 GOOGLE_TOKEN_URL,
@@ -66,7 +80,38 @@ class CalendarTool:
                 },
             )
         resp.raise_for_status()
-        data = resp.json()
+        return self._store_token(resp.json())
+
+    async def _token_from_service_account(self, sa_json: str) -> str:
+        """Firma un JWT con la llave privada de la cuenta de servicio y lo canjea por
+        un access_token. La cuenta debe tener acceso ('Hacer cambios en eventos') al
+        calendario indicado en GOOGLE_CALENDAR_ID (Lily lo comparte con su correo)."""
+        info = json.loads(sa_json)
+        token_uri = info.get("token_uri", GOOGLE_TOKEN_URL)
+        now = int(time.time())
+        assertion = jwt.encode(
+            {
+                "iss": info["client_email"],
+                "scope": GOOGLE_CALENDAR_SCOPE,
+                "aud": token_uri,
+                "iat": now,
+                "exp": now + 3600,
+            },
+            info["private_key"],
+            algorithm="RS256",
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                token_uri,
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "assertion": assertion,
+                },
+            )
+        resp.raise_for_status()
+        return self._store_token(resp.json())
+
+    def _store_token(self, data: dict) -> str:
         self._access_token = data["access_token"]
         self._token_expires_at = datetime.utcnow() + timedelta(
             seconds=int(data.get("expires_in", 3500))
@@ -134,16 +179,33 @@ class CalendarTool:
             "end": {"dateTime": end_time.isoformat(), "timeZone": "America/Mexico_City"},
         }
 
-        token = await self._get_token()
-        cal_id = self.settings.google_calendar_id
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json=body,
+        # Red de seguridad: si el calendario falla (token, permisos, Google caído),
+        # NO rompemos el cierre de la cita — cae a modo simulado (queda en la
+        # plataforma + recordatorios) y un humano la replica. Nunca revienta la
+        # conversación por un problema de calendario.
+        try:
+            token = await self._get_token()
+            cal_id = self.settings.google_calendar_id
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json=body,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "agendar_cita: falló Google Calendar, cae a simulado",
+                extra={"papa": nombre_papa, "fecha": fecha.isoformat(), "error": str(exc)},
             )
-        resp.raise_for_status()
-        data = resp.json()
+            return EventoAgendado(
+                evento_id=f"sim-{fecha.timestamp():.0f}",
+                fecha=fecha,
+                campus=campus,
+                url_calendar=None,
+                simulado=True,
+            )
         return EventoAgendado(
             evento_id=data["id"],
             fecha=fecha,
