@@ -169,6 +169,22 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     #  - bot_activo=false en la conversación (toggle "Yo atiendo" de la bandeja).
     repo = get_repository()
     es_humano = await repo.hay_identificador_humano(identificadores)
+
+    # CONVERSACIÓN PRE-EXISTENTE: si Sofía nunca ha atendido este chat pero en
+    # WhatsApp ya había mensajes de ANTES del cutover, es un cliente que Lily ya
+    # venía atendiendo → Sofía se hace a un lado sola (sin que Lily deba vigilar).
+    # Se evalúa una sola vez: al detectarlo, marca bot_activo=false y ya no vuelve.
+    if not es_humano and await repo.get_conversation(session_id) is None:
+        if await _conversacion_preexistente(session_id):
+            await repo.ensure_conversation(session_id, Canal.WHATSAPP)
+            await repo.set_bot_active(session_id, False, atendido_por="humano")
+            await repo.insert_message(session_id, "user", claim.joined)
+            log.info(
+                "conversación pre-existente (Lily ya venía) → Sofía se hace a un lado",
+                extra={"session_id": session_id},
+            )
+            return
+
     if es_humano or not await repo.is_bot_active(session_id):
         await repo.ensure_conversation(session_id, Canal.WHATSAPP)
         await repo.insert_message(session_id, "user", claim.joined)
@@ -236,6 +252,39 @@ def _texto_propio(data: dict[str, Any]) -> str:
     if isinstance(ext, dict):
         return (ext.get("text") or "").strip()
     return ""
+
+
+_CUTOVER_TS: float | None = None
+
+
+def _cutover_ts() -> float:
+    """Epoch (segundos) del momento en que Sofía entró a producción."""
+    global _CUTOVER_TS
+    if _CUTOVER_TS is None:
+        from datetime import datetime
+
+        _CUTOVER_TS = datetime.fromisoformat(get_settings().sofia_cutover_iso).timestamp()
+    return _CUTOVER_TS
+
+
+async def _conversacion_preexistente(session_id: str) -> bool:
+    """True si el chat de WhatsApp ya tenía mensajes ANTES del cutover — es decir,
+    es una conversación que Lily ya venía atendiendo. Se apoya en el historial de
+    WhatsApp (Evolution). Best-effort: ante cualquier duda/error, False (Sofía
+    atiende) para no dejar sin respuesta a un prospecto nuevo."""
+    msgs = await get_evolution().find_messages(session_id)
+    if not msgs:
+        return False
+    cutover = _cutover_ts()
+    for m in msgs:
+        ts = m.get("messageTimestamp")
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            continue
+        if ts and ts < cutover:
+            return True
+    return False
 
 
 async def _manejar_mensaje_propio(

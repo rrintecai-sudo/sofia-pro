@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # con su valor; se conmuta apuntando el webhook de WhatsApp al servicio deseado.
     sofia_engine: Literal["anthropic", "openai"] = "anthropic"
 
+    # Momento del cutover a producción. Los chats con actividad ANTES de esto se
+    # consideran conversaciones que Lily ya venía atendiendo → Sofía no interviene.
+    sofia_cutover_iso: str = "2026-07-07T15:00:00+00:00"
+
     # --- Feature flags ---
     enable_prompt_caching: bool = True
     # Programador de recordatorios: SOLO un servicio debe correrlo (si no, los

@@ -165,6 +165,36 @@ class EvolutionChannel:
             log.warning("evolution findContacts error", extra={"error": str(exc)})
             return []
 
+    async def find_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Historial de mensajes del chat (lo que WhatsApp guarda), vía Evolution.
+        Se usa para detectar conversaciones que ya existían antes de que Sofía
+        entrara. Best-effort: si falla, devuelve lista vacía."""
+        remote_jid = self.remote_jid_from_session(session_id)
+        try:
+            resp = await self.http.post(
+                f"/chat/findMessages/{self.instance}",
+                json={"where": {"key": {"remoteJid": remote_jid}}},
+            )
+            if resp.status_code >= 400:
+                log.warning(
+                    "evolution findMessages failed",
+                    extra={"status": resp.status_code, "body": resp.text[:200]},
+                )
+                return []
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                msgs = data.get("messages")
+                if isinstance(msgs, dict):
+                    return msgs.get("records") or []
+                if isinstance(msgs, list):
+                    return msgs
+            return []
+        except Exception as exc:  # noqa: BLE001
+            log.warning("evolution findMessages error", extra={"error": str(exc)})
+            return []
+
     async def mark_as_read(self, session_id: str, message_id: str) -> None:
         """Marca el mensaje como leído. `message_id` viene del Webhook de Evolution."""
         remote_jid = self.remote_jid_from_session(session_id)
