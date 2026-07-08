@@ -86,7 +86,7 @@ class EvolutionChannel:
 
     # ---------- envío ----------
 
-    async def send_text(self, session_id: str, text: str) -> None:
+    async def send_text(self, session_id: str, text: str) -> str | None:
         remote_jid = self.remote_jid_from_session(session_id)
         number = self.number_from_remote_jid(remote_jid)
         resp = await self.http.post(
@@ -99,6 +99,18 @@ class EvolutionChannel:
                 extra={"status": resp.status_code, "body": resp.text[:200]},
             )
             resp.raise_for_status()
+        # Registrar el id del mensaje enviado por el BOT, para que el webhook lo
+        # distinga de una respuesta MANUAL de Lily (ambos llegan como fromMe).
+        msg_id: str | None = None
+        try:
+            msg_id = ((resp.json() or {}).get("key") or {}).get("id")
+            if msg_id:
+                from app.core.repository import get_repository
+
+                await get_repository().registrar_mensaje_bot(msg_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no pude registrar id del mensaje del bot", extra={"error": str(exc)})
+        return msg_id
 
     async def send_image(
         self,

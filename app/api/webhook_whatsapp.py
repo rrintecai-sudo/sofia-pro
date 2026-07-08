@@ -106,11 +106,14 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     data = payload.get("data") or {}
     key = data.get("key") or {}
 
-    # Ignora ecos de Sofía misma
+    remote_jid: str = key.get("remoteJid") or ""
+
+    # Mensaje 'propio' (fromMe): puede ser un ECO del bot (ignorar) o una respuesta
+    # MANUAL de Lily (auto-handoff → apagar el bot en ese chat).
     if key.get("fromMe") is True:
+        await _manejar_mensaje_propio(data, key, remote_jid)
         return
 
-    remote_jid: str = key.get("remoteJid") or ""
     if not remote_jid:
         log.warning("whatsapp event sin remoteJid")
         return
@@ -222,6 +225,50 @@ def _identificadores_contacto(remote_jid: str, remote_jid_alt: str | None) -> li
         elif jid.endswith("@lid"):
             ids.append(jid)
     return list(dict.fromkeys(ids))
+
+
+def _texto_propio(data: dict[str, Any]) -> str:
+    """Texto plano de un mensaje 'propio' (respuesta de Lily). Sin transcribir media."""
+    msg = data.get("message") or {}
+    if isinstance(msg.get("conversation"), str):
+        return msg["conversation"].strip()
+    ext = msg.get("extendedTextMessage")
+    if isinstance(ext, dict):
+        return (ext.get("text") or "").strip()
+    return ""
+
+
+async def _manejar_mensaje_propio(
+    data: dict[str, Any], key: dict[str, Any], remote_jid: str
+) -> None:
+    """Mensaje fromMe: si NO lo envió el bot, es Lily contestando a mano → apaga el
+    bot para ese chat (auto-handoff) y guarda el mensaje de Lily en la bandeja."""
+    if not remote_jid or remote_jid.endswith("@g.us") or remote_jid.endswith("@broadcast"):
+        return
+    repo = get_repository()
+    msg_id = key.get("id")
+    # Si el id corresponde a un mensaje que envió el bot → es su propio eco → ignorar.
+    if msg_id and await repo.es_mensaje_del_bot(msg_id):
+        return
+    session_id = EvolutionChannel.session_id_for_remote(remote_jid)
+    texto = _texto_propio(data)
+    # Seguro anti-carrera: si el texto coincide con el último mensaje del asistente,
+    # es un eco del bot aunque su id no se haya registrado todavía → no apagar.
+    if texto and texto == await repo.texto_ultimo_asistente(session_id):
+        return
+
+    # Respuesta MANUAL de Lily → auto-handoff.
+    await repo.ensure_conversation(session_id, Canal.WHATSAPP)
+    if await repo.is_bot_active(session_id):
+        await repo.set_bot_active(session_id, False, atendido_por="humano")
+        log.info(
+            "auto-handoff: Lily respondió a mano → bot apagado",
+            extra={"session_id": session_id},
+        )
+    if texto:
+        await repo.insert_message(
+            session_id, "assistant", texto, metadata={"sent_by": "humano"}
+        )
 
 
 async def _extract_text(data: dict[str, Any], evolution: EvolutionChannel) -> str:

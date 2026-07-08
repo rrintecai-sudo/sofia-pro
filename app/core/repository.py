@@ -237,6 +237,60 @@ class Repository:
         return resp.status_code < 400
 
     # ----------------------------------------------------------------
+    # Mensajes que envió el BOT (para distinguirlos de respuestas manuales de Lily)
+    # ----------------------------------------------------------------
+
+    async def registrar_mensaje_bot(self, message_id: str) -> None:
+        """Registra el id de un mensaje que envió el bot (via Evolution). Sirve para
+        que el webhook distinga un fromMe del bot de una respuesta manual de Lily."""
+        if not message_id:
+            return
+        try:
+            await self.client.post(
+                "/whatsapp_bot_messages",
+                json={"message_id": message_id},
+                headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+            )
+        except Exception as exc:  # nunca romper un envío por esto
+            log.warning("registrar_mensaje_bot error", extra={"error": str(exc)})
+
+    async def texto_ultimo_asistente(self, session_id: str) -> str:
+        """Contenido del último mensaje del asistente en la conversación (para el
+        seguro anti-carrera del auto-handoff)."""
+        try:
+            resp = await self.client.get(
+                "/sofia_messages",
+                params={
+                    "session_id": f"eq.{session_id}",
+                    "role": "eq.assistant",
+                    "select": "content",
+                    "order": "id.desc",
+                    "limit": "1",
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return (rows[0]["content"] if rows else "") or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    async def es_mensaje_del_bot(self, message_id: str) -> bool:
+        """¿Este id fue enviado por el bot? (True = del bot; False = de Lily a mano)."""
+        if not message_id:
+            return False
+        try:
+            resp = await self.client.get(
+                "/whatsapp_bot_messages",
+                params={"message_id": f"eq.{message_id}", "select": "message_id", "limit": "1"},
+            )
+            resp.raise_for_status()
+            return bool(resp.json())
+        except Exception as exc:
+            log.warning("es_mensaje_del_bot error", extra={"error": str(exc)})
+            # Ante la duda, asumimos que ES del bot (no apagar el bot por error).
+            return True
+
+    # ----------------------------------------------------------------
     # sofia_messages
     # ----------------------------------------------------------------
 
