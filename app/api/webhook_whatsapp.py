@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Request, status
 
+from app.adapters.anthropic_client import get_anthropic
 from app.adapters.evolution_client import EvolutionChannel, get_evolution
 from app.config import get_settings
 from app.core.sofia_engine import procesar_turno_sofia
@@ -187,13 +189,18 @@ async def _handle_event(payload: dict[str, Any]) -> None:
     # venía atendiendo → Sofía se hace a un lado sola (sin que Lily deba vigilar).
     # Se evalúa una sola vez: al detectarlo, marca bot_activo=false y ya no vuelve.
     if not es_humano and await repo.get_conversation(session_id) is None:
-        if await _conversacion_preexistente(session_id):
+        preexistente = await _conversacion_preexistente(session_id)
+        continuacion = await _parece_continuacion_humana(claim.joined)
+        if preexistente or continuacion:
             await repo.ensure_conversation(session_id, Canal.WHATSAPP)
             await repo.set_bot_active(session_id, False, atendido_por="humano")
             await repo.insert_message(session_id, "user", claim.joined)
             log.info(
-                "conversación pre-existente (Lily ya venía) → Sofía se hace a un lado",
-                extra={"session_id": session_id},
+                "conversación de Lily (no primer contacto) → Sofía se hace a un lado",
+                extra={
+                    "session_id": session_id,
+                    "motivo": "historial" if preexistente else "continuacion",
+                },
             )
             return
 
@@ -286,6 +293,45 @@ def _es_lead_de_anuncio(data: dict[str, Any]) -> bool:
         return False
 
     return _busca(data.get("message"))
+
+
+# Menciones a Lily (o su equipo por nombre) → señal fuerte de que el papá ya viene
+# hablando con una persona, no con Sofía.
+_RE_HUMANO = re.compile(r"lil[iy]|lilian|miss\s+lil", re.IGNORECASE)
+
+_CLASIF_CONTINUACION = (
+    "Eres un clasificador para una escuela. Te doy el/los PRIMER(OS) mensaje(s) que "
+    "una persona envió por WhatsApp. Responde SOLO una letra:\n"
+    "A = primer contacto / consulta nueva (pide informes, precios, inscripción, saluda "
+    "sin referirse a nada previo).\n"
+    "B = CONTINUACIÓN de una conversación que la persona YA traía con alguien del equipo "
+    "(agradece, retoma o confirma algo ya acordado, una visita/cita ya hablada, saluda a "
+    "alguien por su nombre, se despide, etc.).\n"
+    "Ante la duda, responde A."
+)
+
+
+async def _parece_continuacion_humana(mensaje: str) -> bool:
+    """True si el mensaje parece la CONTINUACIÓN de una conversación que el papá ya
+    tenía con una persona del equipo (no un primer contacto). Evita que Sofía se meta
+    en conversaciones que Lily ya venía atendiendo aunque no haya historial en el
+    sistema. Señal dura: menciona a Lily. Señal fina: clasificador barato."""
+    if not mensaje:
+        return False
+    if _RE_HUMANO.search(mensaje):
+        return True
+    try:
+        r = await get_anthropic().client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1,
+            system=_CLASIF_CONTINUACION,
+            messages=[{"role": "user", "content": mensaje[:600]}],
+        )
+        texto = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+        return texto.strip().upper().startswith("B")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("clasificador continuacion falló", extra={"error": str(exc)})
+        return False  # ante la duda, Sofía responde (no bloquear leads por un error)
 
 
 _CUTOVER_TS: float | None = None
