@@ -381,12 +381,18 @@ async def _manejar_mensaje_propio(
         return
     session_id = EvolutionChannel.session_id_for_remote(remote_jid)
     texto = _texto_propio(data)
+    # fromMe SIN texto = mensaje automático (interactiveMessage/plantilla del flujo de
+    # anuncios, reacciones, protocolo), NO Lily contestando a mano. NO debe apagar el
+    # bot — antes esto dejaba a los leads de anuncio sin respuesta (Meta manda un
+    # interactiveMessage al hacer clic en el anuncio).
+    if not texto:
+        return
     # Seguro anti-carrera: si el texto coincide con el último mensaje del asistente,
     # es un eco del bot aunque su id no se haya registrado todavía → no apagar.
-    if texto and texto == await repo.texto_ultimo_asistente(session_id):
+    if texto == await repo.texto_ultimo_asistente(session_id):
         return
 
-    # Respuesta MANUAL de Lily → auto-handoff.
+    # Respuesta MANUAL de Lily (con texto) → auto-handoff.
     await repo.ensure_conversation(session_id, Canal.WHATSAPP)
     if await repo.is_bot_active(session_id):
         await repo.set_bot_active(session_id, False, atendido_por="humano")
@@ -394,10 +400,9 @@ async def _manejar_mensaje_propio(
             "auto-handoff: Lily respondió a mano → bot apagado",
             extra={"session_id": session_id},
         )
-    if texto:
-        await repo.insert_message(
-            session_id, "assistant", texto, metadata={"sent_by": "humano"}
-        )
+    await repo.insert_message(
+        session_id, "assistant", texto, metadata={"sent_by": "humano"}
+    )
 
 
 async def _extract_text(data: dict[str, Any], evolution: EvolutionChannel) -> str:
