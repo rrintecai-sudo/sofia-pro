@@ -405,6 +405,20 @@ async def _manejar_mensaje_propio(
     )
 
 
+def _tel_de_vcard(vcard: str) -> str:
+    """Extrae el número de teléfono de una vCard (contacto compartido). Prefiere el
+    `waid` (número internacional de WhatsApp) si viene; si no, el valor de TEL."""
+    for line in (vcard or "").splitlines():
+        if line.upper().startswith("TEL"):
+            m = re.search(r"waid=(\d+)", line)
+            if m:
+                return "+" + m.group(1)
+            num = line.split(":")[-1].strip()
+            if num:
+                return num
+    return ""
+
+
 async def _extract_text(data: dict[str, Any], evolution: EvolutionChannel) -> str:
     """Devuelve el texto del mensaje. Transcribe voz, describe imagen.
 
@@ -465,6 +479,33 @@ async def _extract_text(data: dict[str, Any], evolution: EvolutionChannel) -> st
         doc = msg.get("documentMessage") or {}
         name = (doc.get("fileName") or "archivo") if isinstance(doc, dict) else "archivo"
         return f"(el papá envió un documento: {name})"
+
+    # 6. Contacto compartido (vCard) — p. ej. cuando comparte el WhatsApp de alguien.
+    if (
+        "contactMessage" in msg
+        or "contactsArrayMessage" in msg
+        or message_type in ("contactmessage", "contactsarraymessage")
+    ):
+        contactos: list[dict[str, Any]] = []
+        cm = msg.get("contactMessage")
+        if isinstance(cm, dict):
+            contactos.append(cm)
+        cam = msg.get("contactsArrayMessage")
+        if isinstance(cam, dict):
+            contactos.extend(c for c in (cam.get("contacts") or []) if isinstance(c, dict))
+        partes: list[str] = []
+        for c in contactos:
+            nombre = (c.get("displayName") or "").strip()
+            tel = _tel_de_vcard(c.get("vcard") or "")
+            if nombre and tel:
+                partes.append(f"{nombre} ({tel})")
+            elif tel:
+                partes.append(tel)
+            elif nombre:
+                partes.append(nombre)
+        if partes:
+            return "(el papá compartió este contacto de WhatsApp: " + "; ".join(partes) + ")"
+        return "(el papá compartió un contacto de WhatsApp)"
 
     return ""
 
