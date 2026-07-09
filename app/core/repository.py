@@ -128,6 +128,36 @@ class Repository:
         resp.raise_for_status()
         return bool(resp.json())
 
+    async def guardar_oauth_google(
+        self, refresh_token: str, calendar_id: str, email: str
+    ) -> None:
+        """Guarda el permiso de Google Calendar de Lily (OAuth) tras el 'Conectar'."""
+        await self.client.post(
+            "/google_calendar_oauth",
+            params={"on_conflict": "id"},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+            json={
+                "id": 1,
+                "refresh_token": refresh_token,
+                "calendar_id": calendar_id or "primary",
+                "email": email,
+            },
+        )
+
+    async def obtener_oauth_google(self) -> dict[str, Any] | None:
+        """Permiso de Google Calendar guardado (o None si Lily aún no conecta)."""
+        try:
+            resp = await self.client.get(
+                "/google_calendar_oauth",
+                params={"id": "eq.1", "select": "refresh_token,calendar_id,email", "limit": "1"},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0] if rows else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("obtener_oauth_google error", extra={"error": str(exc)})
+            return None
+
     async def quitar_de_humano(self, identificador: str) -> None:
         """Saca un número de la lista 'solo humano' (para recuperar un lead que la
         precarga silenció por error)."""

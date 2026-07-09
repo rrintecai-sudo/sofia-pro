@@ -66,16 +66,16 @@ class CalendarTool:
         sa_json = self.settings.google_service_account_json.strip()
         if sa_json:
             return await self._token_from_service_account(sa_json)
-        return await self._token_from_oauth()
+        return await self._token_from_oauth(self.settings.google_oauth_refresh_token)
 
-    async def _token_from_oauth(self) -> str:
+    async def _token_from_oauth(self, refresh_token: str) -> str:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 GOOGLE_TOKEN_URL,
                 data={
                     "client_id": self.settings.google_oauth_client_id,
                     "client_secret": self.settings.google_oauth_client_secret,
-                    "refresh_token": self.settings.google_oauth_refresh_token,
+                    "refresh_token": refresh_token,
                     "grant_type": "refresh_token",
                 },
             )
@@ -144,9 +144,19 @@ class CalendarTool:
         para que el orchestrator continúe el flujo (la cita queda registrada en
         sofia_conversations.estado_capturado, y un humano la replica en Calendar).
         """
-        if not self.is_configured():
+        from app.core.repository import get_repository
+
+        sa_json = self.settings.google_service_account_json.strip()
+        oauth = None if sa_json else await get_repository().obtener_oauth_google()
+        usa_oauth = bool(
+            oauth
+            and oauth.get("refresh_token")
+            and self.settings.google_oauth_client_id
+            and self.settings.google_oauth_client_secret
+        )
+        if not sa_json and not usa_oauth:
             log.info(
-                "agendar_cita: simulada (sin OAuth)",
+                "agendar_cita: simulada (sin credenciales de calendario)",
                 extra={"papa": nombre_papa, "fecha": fecha.isoformat(), "campus": campus},
             )
             return EventoAgendado(
@@ -184,8 +194,12 @@ class CalendarTool:
         # plataforma + recordatorios) y un humano la replica. Nunca revienta la
         # conversación por un problema de calendario.
         try:
-            token = await self._get_token()
-            cal_id = self.settings.google_calendar_id
+            if sa_json:
+                token = await self._token_from_service_account(sa_json)
+                cal_id = self.settings.google_calendar_id
+            else:  # permiso OAuth de Lily (BD)
+                token = await self._token_from_oauth(oauth["refresh_token"])
+                cal_id = oauth.get("calendar_id") or "primary"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
                     f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events",
