@@ -449,7 +449,10 @@ async def calendar_backfill(
     _check_admin(x_admin_key)
     from datetime import datetime, timedelta, timezone
 
-    from app.tools.calendar import get_calendar_tool
+    import httpx
+
+    from app.integrations.appointments import update_appointment
+    from app.tools.calendar import GOOGLE_CALENDAR_API, get_calendar_tool
 
     repo = get_repository()
     now = datetime.now(timezone.utc)
@@ -464,6 +467,33 @@ async def calendar_backfill(
     resp.raise_for_status()
     citas = resp.json()
     cal = get_calendar_tool()
+
+    # Idempotencia: borrar NUESTROS eventos previos en el rango (los de "Cita de
+    # informes") para no duplicar al re-sincronizar. No toca otros eventos de Lily.
+    borrados = 0
+    tc = await cal._token_y_calendario()
+    if tc:
+        token, cal_id = tc
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            lr = await client.get(
+                f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "timeMin": now.isoformat(),
+                    "timeMax": (now + timedelta(days=dias)).isoformat(),
+                    "maxResults": 250,
+                    "singleEvents": "true",
+                },
+            )
+            for evt in (lr.json().get("items", []) if lr.status_code < 400 else []):
+                if str(evt.get("summary", "")).startswith("Cita de informes"):
+                    d = await client.delete(
+                        f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events/{evt['id']}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if d.status_code < 400 or d.status_code == 410:
+                        borrados += 1
+
     creados = simulados = 0
     detalle: list[str] = []
     for a in citas:
@@ -479,14 +509,16 @@ async def calendar_backfill(
             nombre_hijo=None,
             nivel="",
             fecha=fecha,
-            notas="Cita agendada antes de conectar el calendario.",
+            notas="Cita de informes.",
         )
         if ev.simulado:
             simulados += 1
         else:
             creados += 1
+            await update_appointment(a["id"], {"google_event_id": ev.evento_id})
             detalle.append((lead.get("parent_name") or "?") + " " + fecha.strftime("%d-%b %H:%MZ"))
     return {
+        "borrados": borrados,
         "ok": True,
         "citas_encontradas": len(citas),
         "creados": creados,

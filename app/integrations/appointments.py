@@ -168,6 +168,28 @@ async def get_appointment(
     return _row_to_appointment(rows[0]) if rows else None
 
 
+async def get_google_event_id(
+    appointment_id: int, *, settings: Settings | None = None
+) -> str | None:
+    """Devuelve el id del evento de Google Calendar ligado a la cita, o None."""
+    settings = settings or get_settings()
+    if not settings.supabase_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.supabase_url}/rest/v1/appointments",
+                headers=_auth(settings),
+                params={"id": f"eq.{appointment_id}", "select": "google_event_id", "limit": "1"},
+            )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("get_google_event_id failed", extra={"error": str(exc), "id": appointment_id})
+        return None
+    return rows[0].get("google_event_id") if rows else None
+
+
 async def update_appointment(
     appointment_id: int,
     fields: dict[str, Any],

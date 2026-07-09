@@ -127,6 +127,67 @@ class CalendarTool:
             return self._access_token
         return await self._refresh_access_token()
 
+    async def _token_y_calendario(self) -> tuple[str, str] | None:
+        """Devuelve (access_token, calendar_id) según la credencial disponible
+        (cuenta de servicio o el permiso OAuth de Lily), o None si no hay ninguna."""
+        from app.core.repository import get_repository
+
+        sa_json = self.settings.google_service_account_json.strip()
+        if sa_json:
+            return await self._token_from_service_account(sa_json), self.settings.google_calendar_id
+        oauth = await get_repository().obtener_oauth_google()
+        if (
+            oauth
+            and oauth.get("refresh_token")
+            and self.settings.google_oauth_client_id
+            and self.settings.google_oauth_client_secret
+        ):
+            token = await self._token_from_oauth(oauth["refresh_token"])
+            return token, (oauth.get("calendar_id") or "primary")
+        return None
+
+    async def actualizar_evento(
+        self, google_event_id: str, fecha: datetime, duracion_min: int = 60
+    ) -> bool:
+        """Mueve un evento existente (reagendado). Best-effort."""
+        tc = await self._token_y_calendario()
+        if not tc or not google_event_id:
+            return False
+        token, cal_id = tc
+        end = fecha + timedelta(minutes=duracion_min)
+        body = {
+            "start": {"dateTime": fecha.isoformat(), "timeZone": "America/Mexico_City"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "America/Mexico_City"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.patch(
+                    f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events/{google_event_id}",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json=body,
+                )
+            return resp.status_code < 400
+        except Exception as exc:  # noqa: BLE001
+            log.warning("actualizar_evento falló", extra={"error": str(exc)})
+            return False
+
+    async def cancelar_evento(self, google_event_id: str) -> bool:
+        """Borra un evento (cita cancelada). Best-effort."""
+        tc = await self._token_y_calendario()
+        if not tc or not google_event_id:
+            return False
+        token, cal_id = tc
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.delete(
+                    f"{GOOGLE_CALENDAR_API}/calendars/{cal_id}/events/{google_event_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            return resp.status_code < 400 or resp.status_code == 410
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cancelar_evento falló", extra={"error": str(exc)})
+            return False
+
     async def agendar_cita(
         self,
         *,

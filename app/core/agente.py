@@ -553,6 +553,33 @@ def _texto_confirmacion(*, dt: datetime, campus, correo_enviado: bool, reagendad
     return " ".join(partes)
 
 
+async def _sync_calendario(
+    *, appt_id: int, dt: datetime, inp: dict[str, Any], campus: Any, reagendar: bool
+) -> None:
+    """Crea (o mueve, si es reagendado) el evento en el Google Calendar de Lily y
+    guarda el `google_event_id` en la cita. Best-effort: NUNCA rompe el agendado."""
+    from app.integrations.appointments import get_google_event_id, update_appointment
+    from app.tools.calendar import get_calendar_tool
+
+    try:
+        cal = get_calendar_tool()
+        if reagendar:
+            gid = await get_google_event_id(appt_id)
+            if gid and await cal.actualizar_evento(gid, dt):
+                return  # evento movido en su lugar
+        ev = await cal.agendar_cita(
+            nombre_papa=inp.get("nombre_papa") or "Papá/Mamá",
+            nombre_hijo=inp.get("nombre_hijo"),
+            nivel=(inp.get("nivel") or ""),
+            fecha=dt,
+            campus=getattr(campus, "nombre", None) or "Campus 1",
+        )
+        if not ev.simulado:
+            await update_appointment(appt_id, {"google_event_id": ev.evento_id})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sync calendario falló", extra={"error": str(exc), "appt_id": appt_id})
+
+
 async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: Canal) -> str:
     dt = _parse_slot(inp.get("dia_iso", ""), inp.get("hora", ""))
     if dt is None:
@@ -591,6 +618,7 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
             campos["campus_id"] = campus_id
         if not await update_appointment(existente.id, campos):
             return "No pude mover la cita en el sistema. Pídele que intente de nuevo en un momento."
+        await _sync_calendario(appt_id=existente.id, dt=dt, inp=inp, campus=campus, reagendar=True)
         await _marcar_conversacion_agendada(session_id, dt)
         correo = await _enviar_correos_cita(
             inp=inp, dt=dt, campus=campus, appt_id=existente.id, canal=canal, nivel_lead=nivel_lead
@@ -673,6 +701,7 @@ async def _tool_agendar_visita(inp: dict[str, Any], *, session_id: str, canal: C
     except Exception as exc:  # pragma: no cover
         log.warning("post-agendado (stage/evento) falló", extra={"error": str(exc), "lead_id": lead_id})
 
+    await _sync_calendario(appt_id=appt_id, dt=dt, inp=inp, campus=campus, reagendar=False)
     await _marcar_conversacion_agendada(session_id, dt)
     correo = await _enviar_correos_cita(
         inp=inp, dt=dt, campus=campus, appt_id=appt_id, canal=canal, nivel_lead=nivel_lead
