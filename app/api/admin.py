@@ -439,6 +439,62 @@ async def reactivar_lead(
     }
 
 
+@router.post("/calendar/backfill")
+async def calendar_backfill(
+    dias: int = Query(default=120, ge=1, le=365),
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, Any]:
+    """Empuja al Google Calendar conectado las citas FUTURAS que se agendaron antes
+    de conectar el calendario (una sola vez). Idempotencia mínima: correr una vez."""
+    _check_admin(x_admin_key)
+    from datetime import datetime, timedelta, timezone
+
+    from app.tools.calendar import get_calendar_tool
+
+    repo = get_repository()
+    now = datetime.now(timezone.utc)
+    resp = await repo.client.get(
+        "/appointments",
+        params={
+            "select": "id,fecha_hora,notas,leads(parent_name)",
+            "fecha_hora": f"gte.{now.isoformat()}",
+            "order": "fecha_hora.asc",
+        },
+    )
+    resp.raise_for_status()
+    citas = resp.json()
+    cal = get_calendar_tool()
+    creados = simulados = 0
+    detalle: list[str] = []
+    for a in citas:
+        try:
+            fecha = datetime.fromisoformat(str(a["fecha_hora"]))
+        except (ValueError, KeyError):
+            continue
+        if fecha.tzinfo is None:
+            fecha = fecha.replace(tzinfo=timezone.utc)
+        lead = a.get("leads") or {}
+        ev = await cal.agendar_cita(
+            nombre_papa=(lead.get("parent_name") or "Cita de informes"),
+            nombre_hijo=None,
+            nivel="",
+            fecha=fecha,
+            notas="Cita agendada antes de conectar el calendario.",
+        )
+        if ev.simulado:
+            simulados += 1
+        else:
+            creados += 1
+            detalle.append((lead.get("parent_name") or "?") + " " + fecha.strftime("%d-%b %H:%MZ"))
+    return {
+        "ok": True,
+        "citas_encontradas": len(citas),
+        "creados": creados,
+        "simulados": simulados,
+        "detalle": detalle,
+    }
+
+
 # ── Motor de Sofía: switch Sonnet ↔ gpt-4o-mini (apunta el webhook de WhatsApp) ──
 ENGINE_WEBHOOKS = {
     "sonnet": "https://sofia-pro.cxjnjn.easypanel.host/webhook/whatsapp",
