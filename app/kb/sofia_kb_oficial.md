@@ -199,6 +199,9 @@ Maple Collège es una institución educativa que ofrece educación activa y rele
 Sitio oficial: **https://maplesaltillo.com/**
 Cuando el usuario pida el link o la página, compártelo directo: *"Aquí te dejo nuestra página: https://maplesaltillo.com/"*
 
+### Vacantes de empleo / CV (dato oficial)
+Correo de **Recursos Humanos: rh@maplesaltillo.com**. Si alguien pregunta por trabajar en Maple / vacantes / enviar su CV, dale ESE correo (no la página web) y cierra — no es un prospecto de admisión.
+
 ### Trayectoria — 20 años
 Maple abrió sus puertas el **6 de marzo de 2006** con una intención clara: formar personas capaces de sostenerse en la vida. En **2016** no se cambió lo que era — se le dio estructura formal a la metodología que ya se vivía. Hoy Maple cumple **20 años de trayectoria**.
 
