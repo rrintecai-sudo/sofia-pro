@@ -383,6 +383,34 @@ async def inbox_toggle(
     return {"status": "ok" if ok else "error", "bot_activo": body.bot_activo}
 
 
+# ── Seguimiento post-cita desde el pipeline (CRM) ──
+
+
+class MensajeBotIn(BaseModel):
+    session_id: str
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/mensaje-bot")
+async def mensaje_bot(
+    body: MensajeBotIn,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, str]:
+    """Envía un mensaje COMO Sofía (bot) a una conversación de WhatsApp y deja el bot
+    ACTIVO (para que Sofía siga la conversación). Lo usa el pipeline para el
+    seguimiento de 'no asistió → ¿reagendamos?'."""
+    _check_admin(x_admin_key)
+    repo = get_repository()
+    try:
+        await get_evolution().send_text(body.session_id, body.text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"envío falló: {exc}") from exc
+    await repo.ensure_conversation(body.session_id, Canal.WHATSAPP)
+    await repo.insert_message(body.session_id, "assistant", body.text)
+    await repo.set_bot_active(body.session_id, True, atendido_por="bot")
+    return {"status": "sent"}
+
+
 # ── Leads silenciados por la lista (blocklist demasiado amplia) ──
 
 
