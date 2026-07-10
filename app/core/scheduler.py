@@ -103,6 +103,11 @@ async def tick_reminders() -> None:
         sid = _session_id_de_lead(lead)
         if not sid:
             continue
+        # Si Lily tomó el chat a mano (modo humano / bot apagado), ella maneja la cita
+        # y sus recordatorios. Sofía NO manda recordatorio automático — evita mandar la
+        # fecha vieja cuando Lily reagenda por fuera del sistema (caso Ana Sánchez).
+        if not await repo.is_bot_active(sid):
+            continue
         nombre_full = (lead.get("parent_name") or "").strip()
         nombre = nombre_full.split(" ")[0] if nombre_full else ""
         dt_local = fecha.astimezone(TZ)
