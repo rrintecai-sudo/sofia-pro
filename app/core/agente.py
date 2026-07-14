@@ -579,6 +579,56 @@ def _texto_confirmacion(*, dt: datetime, campus, correo_enviado: bool, reagendad
     return " ".join(partes)
 
 
+def _telefono_de_session(session_id: str) -> str | None:
+    ident = session_id.split(":", 1)[-1].split("@")[0]
+    digits = "".join(c for c in ident if c.isdigit())
+    return digits or None
+
+
+async def _nombre_contacto_wa(session_id: str) -> str | None:
+    """Nombre guardado / pushName del contacto (para nombrar el lead nuevo)."""
+    numero = _telefono_de_session(session_id)
+    if not numero:
+        return None
+    try:
+        resp = await get_repository().client.get(
+            "/whatsapp_contactos",
+            params={"identificador": f"eq.{numero}", "select": "nombre_guardado,pushname", "limit": "1"},
+        )
+        rows = resp.json()
+        if rows:
+            return (rows[0].get("nombre_guardado") or rows[0].get("pushname")) or None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+async def _asegurar_lead_pipeline(session_id: str, canal: Canal, turn_number: int) -> None:
+    """Mete el prospecto al pipeline (CRM): crea el lead en 'contacto_inicial' al
+    conversar y lo mueve a 'pendiente_agendar' cuando ya hubo conversación pero aún
+    no agenda. Best-effort — solo WhatsApp (prospectos reales). Feedback Gaby."""
+    if canal != Canal.WHATSAPP:
+        return
+    try:
+        lead = await get_lead_by_session(session_id)
+        if lead is None:
+            lead_id = await create_lead(
+                parent_name=(await _nombre_contacto_wa(session_id)) or "Prospecto",
+                channel=canal.value,
+                conversation_session_id=session_id,
+                parent_phone=_telefono_de_session(session_id),
+                notes="Lead creado por Sofía al iniciar la conversación.",
+            )
+            stage = "contacto_inicial"
+        else:
+            lead_id, stage = lead.id, lead.stage
+        # Ya conversó (2+ turnos) pero sigue en contacto inicial → pendiente por agendar.
+        if lead_id and turn_number >= 2 and stage == "contacto_inicial":
+            await advance_stage_if_lower(lead_id, stage, "pendiente_agendar")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("asegurar lead pipeline falló", extra={"error": str(exc), "session": session_id})
+
+
 async def _sync_calendario(
     *, appt_id: int, dt: datetime, inp: dict[str, Any], campus: Any, reagendar: bool
 ) -> None:
@@ -867,6 +917,9 @@ async def procesar_turno_agente(
     # WhatsApp no renderiza markdown: red de seguridad determinista.
     if canal == Canal.WHATSAPP:
         final_text = _a_formato_whatsapp(final_text)
+
+    # Mete/actualiza el prospecto en el pipeline (contacto_inicial → pendiente_agendar).
+    await _asegurar_lead_pipeline(session_id, canal, turn_number)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     cost = calculate_cost(

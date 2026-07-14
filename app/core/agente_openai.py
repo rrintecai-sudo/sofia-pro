@@ -24,6 +24,7 @@ from app.core.agente import (
     AgenteResult,
     _a_formato_whatsapp,
     _anexar_mensaje_valor,
+    _asegurar_lead_pipeline,
     _build_system_blocks,
     _ejecutar_tool,
 )
@@ -182,6 +183,8 @@ async def procesar_turno_openai(
 
     if canal == Canal.WHATSAPP:
         final_text = _a_formato_whatsapp(final_text)
+
+    await _asegurar_lead_pipeline(session_id, canal, turn_number)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     # Costo conservador: contamos todo el input a precio completo (sin descuento de
