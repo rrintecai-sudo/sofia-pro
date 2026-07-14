@@ -23,6 +23,7 @@ from app.core.agente import (
     TOOLS_SPEC,
     AgenteResult,
     _a_formato_whatsapp,
+    _anexar_mensaje_valor,
     _build_system_blocks,
     _ejecutar_tool,
 )
@@ -176,6 +177,8 @@ async def procesar_turno_openai(
 
     if not final_text:
         final_text = "Disculpa, se me cruzaron los cables un momento 😅. ¿Me repites tu última pregunta?"
+
+    final_text = _anexar_mensaje_valor(final_text)
 
     if canal == Canal.WHATSAPP:
         final_text = _a_formato_whatsapp(final_text)

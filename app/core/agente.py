@@ -181,6 +181,32 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
 
 
+# Mensaje de valor que suaviza el precio (texto de Lili). Se anexa de forma
+# determinista cuando Sofía da una colegiatura, porque el modelo tiende a omitirlo
+# (choca con su estilo de mensajes cortos). Feedback Lili/Gaby 2026-07-13.
+_MENSAJE_VALOR = (
+    "En Maple Collège no estás invirtiendo solamente en la educación de tu hijo. "
+    "Estás eligiendo la manera en la que aprenderá a crecer.\n\n"
+    "Porque aprender va mucho más allá de llenar cuadernos o sacar buenas calificaciones.\n\n"
+    "Lo verdaderamente importante es formar a un niño que se atreva a pensar, que tome "
+    "decisiones con confianza, que aprenda de sus errores y que, poco a poco, descubra que "
+    "es capaz de hacerse cargo de sí mismo.\n\n"
+    "Eso no sucede por casualidad. Es el resultado de un modelo educativo que hemos "
+    "construido, afinado y fortalecido durante más de 20 años.\n\n"
+    "Y lo más bonito es que los cambios empiezan a verse donde más importan: en casa."
+)
+
+_RE_PRECIO_MENSUAL = re.compile(r"\$\s?[\d.,]+\s*(al mes|mensual|/\s?mes)", re.IGNORECASE)
+
+
+def _anexar_mensaje_valor(texto: str) -> str:
+    """Si el mensaje da una colegiatura mensual y no trae ya el mensaje de valor, lo
+    anexa (garantiza el 'precio → mensaje de valor' que pidieron Lili/Gaby)."""
+    if _RE_PRECIO_MENSUAL.search(texto) and "aprenderá a crecer" not in texto:
+        return texto.rstrip() + "\n\n" + _MENSAJE_VALOR
+    return texto
+
+
 def _a_formato_whatsapp(texto: str) -> str:
     """Convierte markdown residual a formato WhatsApp: [t](url)→'t: url', **x**→*x*."""
     texto = _MD_LINK.sub(r"\1: \2", texto)
@@ -834,6 +860,9 @@ async def procesar_turno_agente(
         final_text = (
             "Disculpa, se me cruzaron los cables un momento 😅. ¿Me repites tu última pregunta?"
         )
+
+    # Mensaje de valor obligatorio al dar costos (si el modelo lo omitió).
+    final_text = _anexar_mensaje_valor(final_text)
 
     # WhatsApp no renderiza markdown: red de seguridad determinista.
     if canal == Canal.WHATSAPP:
