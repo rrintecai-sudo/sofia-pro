@@ -405,6 +405,19 @@ async def _manejar_mensaje_propio(
     if texto == await repo.texto_ultimo_asistente(session_id):
         return
 
+    # CANDADO ROBUSTO (independiente del texto): si Sofía TODAVÍA no ha respondido en
+    # este chat, un fromMe es casi seguro una respuesta automática (auto-saludo /
+    # instant-reply del anuncio de Meta), NO Lily contestando a mano. Toda
+    # auto-respuesta llega ANTES de que Sofía hable → no apagar el bot. Lily siempre
+    # entra a conversaciones donde Sofía YA respondió. Como Meta no se puede apagar
+    # (campañas corriendo), esto es lo que evita que los leads se queden en el aire.
+    if not await repo.sofia_ya_respondio(session_id):
+        log.info(
+            "fromMe antes de que Sofía responda → probable auto-respuesta, no apagar",
+            extra={"session_id": session_id},
+        )
+        return
+
     # Respuesta MANUAL de Lily (con texto) → auto-handoff.
     await repo.ensure_conversation(session_id, Canal.WHATSAPP)
     if await repo.is_bot_active(session_id):

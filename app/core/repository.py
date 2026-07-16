@@ -355,6 +355,30 @@ class Repository:
         except Exception:  # noqa: BLE001
             return ""
 
+    async def sofia_ya_respondio(self, session_id: str) -> bool:
+        """¿Sofía ya mandó al menos una respuesta REAL (no humano) en este chat? Se
+        usa para el candado anti auto-respuestas: un fromMe ANTES de que Sofía hable
+        es casi seguro un auto-saludo/instant-reply del anuncio, no Lily → no apagar."""
+        try:
+            resp = await self.client.get(
+                "/sofia_messages",
+                params={
+                    "session_id": f"eq.{session_id}",
+                    "role": "eq.assistant",
+                    "select": "metadata",
+                    "limit": "50",
+                },
+            )
+            resp.raise_for_status()
+            for r in resp.json():
+                meta = r.get("metadata")
+                if not (isinstance(meta, dict) and meta.get("sent_by") == "humano"):
+                    return True  # hay un mensaje real de Sofía
+            return False
+        except Exception as exc:  # noqa: BLE001
+            log.warning("sofia_ya_respondio error", extra={"error": str(exc)})
+            return True  # ante error, comportamiento previo (permite handoff)
+
     async def es_mensaje_del_bot(self, message_id: str) -> bool:
         """¿Este id fue enviado por el bot? (True = del bot; False = de Lily a mano)."""
         if not message_id:
