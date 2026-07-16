@@ -214,6 +214,34 @@ def _a_formato_whatsapp(texto: str) -> str:
     return texto
 
 
+_DIAS_SEM = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+_MESES_ES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
+
+
+def _tabla_fechas(ahora: datetime) -> str:
+    """Tabla de fechas exactas para los próximos días. Evita que el modelo calcule
+    mal a qué fecha corresponde un día de la semana (bug real: dijo 'viernes 18'
+    cuando el viernes era 17). El modelo debe USAR estas fechas, no calcularlas."""
+    from datetime import timedelta
+
+    lineas = []
+    for i in range(0, 15):
+        d = (ahora + timedelta(days=i)).date()
+        wd = d.weekday()  # 0=lunes ... 6=domingo
+        etiqueta = " (HOY)" if i == 0 else (" (mañana)" if i == 1 else "")
+        finde = "  ← fin de semana, Lily NO atiende" if wd >= 5 else ""
+        lineas.append(
+            f"  - {_DIAS_SEM[wd]} {d.day} de {_MESES_ES[d.month - 1]}{etiqueta}{finde}"
+        )
+    return (
+        "**Fechas exactas (ÚSALAS TAL CUAL — NUNCA calcules la fecha de un día tú "
+        "misma, siempre tómala de aquí):**\n" + "\n".join(lineas)
+    )
+
+
 def _build_system_blocks(canal: Canal) -> list[dict[str, Any]]:
     """Bloques del system prompt. La KB (grande y estable) se cachea; la fecha
     actual y el formato por canal van DESPUÉS del breakpoint de cache."""
@@ -232,7 +260,8 @@ def _build_system_blocks(canal: Canal) -> list[dict[str, Any]]:
             "type": "text",
             "text": (
                 f"Contexto temporal — hoy es {_fecha_es(ahora)} de {ahora.year}, "
-                f"{_hora_es(ahora)} (hora de Saltillo/Monterrey)."
+                f"{_hora_es(ahora)} (hora de Saltillo/Monterrey).\n\n"
+                + _tabla_fechas(ahora)
             ),
         },
     ]
