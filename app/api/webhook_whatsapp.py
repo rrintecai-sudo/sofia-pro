@@ -273,6 +273,16 @@ def _texto_propio(data: dict[str, Any]) -> str:
     return ""
 
 
+# Auto-respuestas de WhatsApp Business (saludo/ausencia configurados en la cuenta):
+# llegan como fromMe CON texto pero NO son Lily contestando a mano → no apagar Sofía.
+_AUTORESPUESTAS_WA = ("gracias por comunicarte con maple",)
+
+
+def _es_autorespuesta_wa(texto: str) -> bool:
+    t = (texto or "").strip().lower()
+    return any(p in t for p in _AUTORESPUESTAS_WA)
+
+
 # Marcas típicas de un clic en anuncio de Facebook/Instagram (click-to-WhatsApp).
 _AD_KEYS = {"externaladreply", "ctwaclid", "conversionsource"}
 
@@ -386,6 +396,9 @@ async def _manejar_mensaje_propio(
     # bot — antes esto dejaba a los leads de anuncio sin respuesta (Meta manda un
     # interactiveMessage al hacer clic en el anuncio).
     if not texto:
+        return
+    # Auto-respuesta de WhatsApp Business (saludo automático) → no es Lily, no apagar.
+    if _es_autorespuesta_wa(texto):
         return
     # Seguro anti-carrera: si el texto coincide con el último mensaje del asistente,
     # es un eco del bot aunque su id no se haya registrado todavía → no apagar.
