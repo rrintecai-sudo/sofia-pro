@@ -359,10 +359,33 @@ def _cutover_ts() -> float:
 
 _JIDS_TTL_SEG = 300.0
 _jids_cache: dict[str, tuple[float, list[str]]] = {}
+# Fecha de creación del chat más antiguo de cada número (la llena _jids_del_mismo_numero,
+# que ya trae los chats; se guarda aparte para no pedirlos dos veces).
+_creacion_cache: dict[str, int | None] = {}
 
 
 def _solo_digitos(s: str) -> str:
     return "".join(c for c in (s or "") if c.isdigit())
+
+
+def _fecha_creacion_chat(chat: dict[str, Any]) -> int | None:
+    """Fecha (epoch seg) en que Evolution creó el registro del chat, decodificada del
+    `id` (un CUID de Prisma: 'c' + timestamp en base36).
+
+    Es LA señal confiable para saber si una conversación ya existía antes de Sofía.
+    El historial de mensajes NO sirve: Evolution no sincronizó los mensajes viejos, así
+    que chats con años de trato con Lily aparecen con un solo mensaje (caso Ayme Durón).
+    Devuelve None si el id no decodifica a una fecha razonable (≈9% de los chats).
+    """
+    cid = str(chat.get("id") or "")
+    if len(cid) < 9 or not cid.startswith("c"):
+        return None
+    try:
+        ts = int(cid[1:9], 36) // 1000
+    except ValueError:
+        return None
+    # Cordura: descartar basura (antes de 2020 o después de 2030).
+    return ts if 1577836800 < ts < 1893456000 else None
 
 
 async def _jids_del_mismo_numero(session_id: str) -> list[str]:
@@ -387,12 +410,19 @@ async def _jids_del_mismo_numero(session_id: str) -> list[str]:
         return hit[1]
 
     jids = [jid_entrante]
+    creado: int | None = None
     for ch in await get_evolution().find_chats():
         jid = str(ch.get("remoteJid") or "")
         if not jid or jid.endswith("@g.us") or jid.endswith("@broadcast"):
             continue
-        if _solo_digitos(jid.split("@")[0])[-10:] == clave and jid not in jids:
+        if _solo_digitos(jid.split("@")[0])[-10:] != clave:
+            continue
+        if jid not in jids:
             jids.append(jid)
+        f = _fecha_creacion_chat(ch)
+        if f and (creado is None or f < creado):
+            creado = f
+    _creacion_cache[clave] = creado
     _jids_cache[clave] = (ahora, jids)
     if len(_jids_cache) > 500:
         for k in sorted(_jids_cache, key=lambda k: _jids_cache[k][0])[:250]:
@@ -412,7 +442,23 @@ async def _conversacion_preexistente(session_id: str) -> bool:
     """
     cutover = _cutover_ts()
     evo = get_evolution()
-    for jid in await _jids_del_mismo_numero(session_id):
+    jids = await _jids_del_mismo_numero(session_id)
+
+    # Señal principal: ¿el chat ya existía en WhatsApp antes del cutover? Se saca de la
+    # fecha de creación del registro en Evolution, NO de los mensajes (que no están).
+    clave = _solo_digitos(
+        EvolutionChannel.remote_jid_from_session(session_id).split("@")[0]
+    )[-10:]
+    creado = _creacion_cache.get(clave)
+    if creado and creado < cutover:
+        log.info(
+            "chat PRE-EXISTENTE por fecha de creación → Sofía se hace a un lado",
+            extra={"session_id": session_id, "creado_epoch": creado},
+        )
+        return True
+
+    # Respaldo: para el ~9% de chats cuyo id no decodifica, mirar el historial.
+    for jid in jids:
         for m in await evo.find_messages_by_jid(jid):
             ts = m.get("messageTimestamp")
             try:
