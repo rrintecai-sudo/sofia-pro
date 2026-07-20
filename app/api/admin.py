@@ -467,6 +467,35 @@ async def reactivar_lead(
     }
 
 
+@router.get("/calendar/ocupado")
+async def calendar_ocupado(
+    fecha: str = Query(description="Día a inspeccionar, YYYY-MM-DD"),
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, Any]:
+    """Diagnóstico: qué ve Sofía como OCUPADO en el Google Calendar real de Lily ese
+    día. Sirve para confirmar que la disponibilidad respeta su agenda."""
+    _check_admin(x_admin_key)
+    from datetime import datetime, timedelta
+
+    from app.core.appointment_extractor import TZ_MONTERREY
+    from app.tools.calendar import get_calendar_tool
+
+    d = datetime.strptime(fecha, "%Y-%m-%d")
+    ini = d.replace(tzinfo=TZ_MONTERREY)
+    bloques = await get_calendar_tool().bloques_ocupados(ini, ini + timedelta(days=1))
+    return {
+        "fecha": fecha,
+        "n_bloques": len(bloques),
+        "bloques": [
+            {
+                "inicio": i.astimezone(TZ_MONTERREY).strftime("%H:%M"),
+                "fin": f.astimezone(TZ_MONTERREY).strftime("%H:%M"),
+            }
+            for i, f in bloques
+        ],
+    }
+
+
 @router.post("/calendar/backfill")
 async def calendar_backfill(
     dias: int = Query(default=120, ge=1, le=365),

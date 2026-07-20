@@ -146,6 +146,47 @@ class CalendarTool:
             return token, (oauth.get("calendar_id") or "primary")
         return None
 
+    async def bloques_ocupados(
+        self, inicio: datetime, fin: datetime
+    ) -> list[tuple[datetime, datetime]]:
+        """Bloques OCUPADOS en el calendario real de Lily entre [inicio, fin), vía la
+        API freeBusy de Google.
+
+        Sirve para que Sofía no agende encima de lo que Lily ya tiene en su agenda
+        (juntas, eventos personales, citas cargadas a mano). Best-effort: si algo
+        falla devuelve [] — nunca debe tumbar el flujo de agendar.
+        """
+        tc = await self._token_y_calendario()
+        if not tc:
+            return []
+        token, cal_id = tc
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{GOOGLE_CALENDAR_API}/freeBusy",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={
+                        "timeMin": inicio.isoformat(),
+                        "timeMax": fin.isoformat(),
+                        "timeZone": "America/Mexico_City",
+                        "items": [{"id": cal_id}],
+                    },
+                )
+            resp.raise_for_status()
+            cal = (resp.json().get("calendars") or {}).get(cal_id) or {}
+            bloques: list[tuple[datetime, datetime]] = []
+            for b in cal.get("busy") or []:
+                try:
+                    ini = datetime.fromisoformat((b["start"] or "").replace("Z", "+00:00"))
+                    f = datetime.fromisoformat((b["end"] or "").replace("Z", "+00:00"))
+                    bloques.append((ini, f))
+                except Exception:  # noqa: BLE001, PERF203
+                    continue
+            return bloques
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bloques_ocupados (freeBusy) falló", extra={"error": str(exc)})
+            return []
+
     async def actualizar_evento(
         self, google_event_id: str, fecha: datetime, duracion_min: int = 60
     ) -> bool:

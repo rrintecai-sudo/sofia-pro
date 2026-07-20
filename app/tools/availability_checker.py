@@ -234,7 +234,56 @@ async def _fetch_appointments_in_range(
         )
         return []
 
-    return [(_parse_appt_ts(r["fecha_hora"]), int(r.get("duracion_min") or 60)) for r in rows]
+    ocupados = [
+        (_parse_appt_ts(r["fecha_hora"]), int(r.get("duracion_min") or 60)) for r in rows
+    ]
+    # Además de nuestras citas, respetar lo que Lily YA tiene en su Google Calendar
+    # real (juntas, eventos personales, citas cargadas a mano). Sin esto Sofía
+    # agendaba encima de bloques ocupados. Best-effort: si falla, seguimos con
+    # nuestras citas nada más.
+    ocupados.extend(await _fetch_bloques_google(start, end))
+    return ocupados
+
+
+# Caché corto de freeBusy: una consulta de disponibilidad dispara varias llamadas a
+# _fetch_appointments_in_range en el mismo turno; sin esto le pegaríamos a Google en
+# cada una. 60 s es suficientemente fresco para una agenda de citas.
+_GCAL_TTL_SEG = 60.0
+_gcal_cache: dict[tuple[str, str], tuple[float, list[tuple[datetime, int]]]] = {}
+
+
+async def _fetch_bloques_google(
+    start: datetime, end: datetime
+) -> list[tuple[datetime, int]]:
+    """Bloques ocupados del Google Calendar de Lily, en el mismo formato
+    (inicio_local, duracion_min) que las citas nuestras."""
+    import time as _time
+
+    clave = (start.isoformat(), end.isoformat())
+    hit = _gcal_cache.get(clave)
+    ahora = _time.monotonic()
+    if hit and ahora - hit[0] < _GCAL_TTL_SEG:
+        return hit[1]
+    try:
+        from app.tools.calendar import get_calendar_tool
+
+        bloques = await get_calendar_tool().bloques_ocupados(start, end)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudieron leer bloques de Google", extra={"error": str(exc)})
+        return []
+
+    fuera: list[tuple[datetime, int]] = []
+    for ini, fin in bloques:
+        ini_local = ini.astimezone(TZ_MONTERREY)
+        dur = max(1, int((fin - ini).total_seconds() // 60))
+        fuera.append((ini_local, dur))
+    if fuera:
+        log.info("bloques ocupados de Google aplicados", extra={"n": len(fuera)})
+    _gcal_cache[clave] = (ahora, fuera)
+    if len(_gcal_cache) > 200:  # poda simple, no crece sin control
+        for k in sorted(_gcal_cache, key=lambda k: _gcal_cache[k][0])[:100]:
+            _gcal_cache.pop(k, None)
+    return fuera
 
 
 # ============================================================
