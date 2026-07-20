@@ -165,11 +165,39 @@ class EvolutionChannel:
             log.warning("evolution findContacts error", extra={"error": str(exc)})
             return []
 
+    async def find_chats(self) -> list[dict[str, Any]]:
+        """Lista de chats de la instancia. Es la llamada CONFIABLE de Evolution: da el
+        `remoteJid` EXACTO de cada chat (incluidas las variantes `@lid`), que es lo que
+        `findMessages` necesita. Best-effort: si falla, lista vacía."""
+        try:
+            resp = await self.http.post(f"/chat/findChats/{self.instance}", json={})
+            if resp.status_code >= 400:
+                log.warning(
+                    "evolution findChats failed",
+                    extra={"status": resp.status_code, "body": resp.text[:200]},
+                )
+                return []
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                for k in ("data", "chats", "records"):
+                    v = data.get(k)
+                    if isinstance(v, list):
+                        return v
+            return []
+        except Exception as exc:  # noqa: BLE001
+            log.warning("evolution findChats error", extra={"error": str(exc)})
+            return []
+
     async def find_messages(self, session_id: str) -> list[dict[str, Any]]:
-        """Historial de mensajes del chat (lo que WhatsApp guarda), vía Evolution.
-        Se usa para detectar conversaciones que ya existían antes de que Sofía
-        entrara. Best-effort: si falla, devuelve lista vacía."""
-        remote_jid = self.remote_jid_from_session(session_id)
+        """Historial de mensajes del chat (lo que WhatsApp guarda), vía Evolution."""
+        return await self.find_messages_by_jid(self.remote_jid_from_session(session_id))
+
+    async def find_messages_by_jid(self, remote_jid: str) -> list[dict[str, Any]]:
+        """Igual que `find_messages` pero con un `remoteJid` EXACTO. Importante: el jid
+        debe venir de `find_chats`, no reconstruirse del número (MX usa `521` vs `52` y
+        hay chats bajo `@lid`), o Evolution devuelve vacío aunque sí haya historial."""
         try:
             resp = await self.http.post(
                 f"/chat/findMessages/{self.instance}",

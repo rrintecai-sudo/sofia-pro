@@ -357,23 +357,74 @@ def _cutover_ts() -> float:
     return _CUTOVER_TS
 
 
-async def _conversacion_preexistente(session_id: str) -> bool:
-    """True si el chat de WhatsApp ya tenía mensajes ANTES del cutover — es decir,
-    es una conversación que Lily ya venía atendiendo. Se apoya en el historial de
-    WhatsApp (Evolution). Best-effort: ante cualquier duda/error, False (Sofía
-    atiende) para no dejar sin respuesta a un prospecto nuevo."""
-    msgs = await get_evolution().find_messages(session_id)
-    if not msgs:
-        return False
-    cutover = _cutover_ts()
-    for m in msgs:
-        ts = m.get("messageTimestamp")
-        try:
-            ts = int(ts)
-        except (TypeError, ValueError):
+_JIDS_TTL_SEG = 300.0
+_jids_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _solo_digitos(s: str) -> str:
+    return "".join(c for c in (s or "") if c.isdigit())
+
+
+async def _jids_del_mismo_numero(session_id: str) -> list[str]:
+    """Todos los `remoteJid` de Evolution que pertenecen al MISMO teléfono.
+
+    WhatsApp parte la identidad de un contacto entre `@s.whatsapp.net` y `@lid`: el
+    historial viejo puede vivir bajo una y el mensaje nuevo llegar por la otra. Si solo
+    miramos el jid entrante, el historial de Lily es INVISIBLE (caso Ayme Durón). Se
+    comparan los últimos 10 dígitos, que en México identifican el número sin importar
+    el prefijo 52/521.
+    """
+    import time as _time
+
+    jid_entrante = EvolutionChannel.remote_jid_from_session(session_id)
+    clave = _solo_digitos(jid_entrante.split("@")[0])[-10:]
+    if not clave:
+        return [jid_entrante]
+
+    hit = _jids_cache.get(clave)
+    ahora = _time.monotonic()
+    if hit and ahora - hit[0] < _JIDS_TTL_SEG:
+        return hit[1]
+
+    jids = [jid_entrante]
+    for ch in await get_evolution().find_chats():
+        jid = str(ch.get("remoteJid") or "")
+        if not jid or jid.endswith("@g.us") or jid.endswith("@broadcast"):
             continue
-        if ts and ts < cutover:
-            return True
+        if _solo_digitos(jid.split("@")[0])[-10:] == clave and jid not in jids:
+            jids.append(jid)
+    _jids_cache[clave] = (ahora, jids)
+    if len(_jids_cache) > 500:
+        for k in sorted(_jids_cache, key=lambda k: _jids_cache[k][0])[:250]:
+            _jids_cache.pop(k, None)
+    return jids
+
+
+async def _conversacion_preexistente(session_id: str) -> bool:
+    """True si el chat de WhatsApp ya tenía mensajes ANTES del cutover — es decir, es
+    una conversación que Lily ya venía atendiendo (cliente inscrito o en proceso), y
+    Sofía NO debe tratarla como prospecto nuevo.
+
+    Revisa TODAS las identidades del mismo teléfono (`@s.whatsapp.net` y `@lid`), no
+    solo el jid por el que llegó el mensaje: mirar una sola escondía historiales
+    completos. Best-effort: si Evolution falla, False (Sofía atiende) para no dejar
+    mudo a un prospecto nuevo de anuncio.
+    """
+    cutover = _cutover_ts()
+    evo = get_evolution()
+    for jid in await _jids_del_mismo_numero(session_id):
+        for m in await evo.find_messages_by_jid(jid):
+            ts = m.get("messageTimestamp")
+            try:
+                ts = int(ts)
+            except (TypeError, ValueError):
+                continue
+            if ts and ts < cutover:
+                log.info(
+                    "conversación PRE-EXISTENTE detectada → Sofía se hace a un lado",
+                    extra={"session_id": session_id, "jid_con_historial": jid},
+                )
+                return True
     return False
 
 

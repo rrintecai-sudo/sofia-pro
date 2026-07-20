@@ -467,6 +467,44 @@ async def reactivar_lead(
     }
 
 
+@router.get("/diag/preexistente")
+async def diag_preexistente(
+    numero: str = Query(description="Teléfono, con o sin prefijo (se usan los últimos 10 dígitos)"),
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, Any]:
+    """Diagnóstico: ¿Sofía reconoce este número como conversación PRE-EXISTENTE de Lily?
+    Muestra todas las identidades (@s.whatsapp.net / @lid) y cuántos mensajes ve en
+    cada una, para cazar historiales invisibles."""
+    _check_admin(x_admin_key)
+    from app.adapters.evolution_client import get_evolution
+    from app.api.webhook_whatsapp import (
+        _conversacion_preexistente,
+        _cutover_ts,
+        _jids_del_mismo_numero,
+    )
+
+    session_id = f"whatsapp:{''.join(c for c in numero if c.isdigit())}@s.whatsapp.net"
+    jids = await _jids_del_mismo_numero(session_id)
+    evo = get_evolution()
+    cutover = _cutover_ts()
+    detalle = []
+    for jid in jids:
+        msgs = await evo.find_messages_by_jid(jid)
+        previos = 0
+        for m in msgs:
+            try:
+                if int(m.get("messageTimestamp") or 0) < cutover:
+                    previos += 1
+            except (TypeError, ValueError):
+                continue
+        detalle.append({"jid": jid, "mensajes": len(msgs), "previos_al_cutover": previos})
+    return {
+        "numero": numero,
+        "identidades": detalle,
+        "preexistente": await _conversacion_preexistente(session_id),
+    }
+
+
 @router.get("/calendar/ocupado")
 async def calendar_ocupado(
     fecha: str = Query(description="Día a inspeccionar, YYYY-MM-DD"),
